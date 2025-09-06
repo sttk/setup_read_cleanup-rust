@@ -10,7 +10,7 @@ readme = "README.md"
 repository = "https://github.com/sttk/setup_read_cleanup-rust"
 license = "MIT"
 keywords = ["shared-resource", "thread-safe", "static-safe", "phase-transition", "graceful"]
-categories = ["concurrency"]
+categories = ["concurrency", "asynchronous", "rust-patterns"]
 
 
 [dependencies]
