@@ -23,12 +23,12 @@ compile() {
 }
 
 test() {
-  cargo test -- --show-output
+  cargo test --all-features -- --show-output
   errcheck $?
 }
 
 unit() {
-  cargo test -- --show-output $1
+  cargo test --all-features -- --show-output $1
   errcheck $?
 }
 
