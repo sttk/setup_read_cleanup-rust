@@ -9,6 +9,7 @@ use std::{sync::atomic, thread, time};
 impl<T: Send + Sync> PhasedLock<T> {
     pub fn wait_gracefully(&self, ws: WaitStrategy) -> Result<(), WaitStrategy> {
         match ws {
+            WaitStrategy::NoWait => Ok(()),
             WaitStrategy::FixedWait(tm) => {
                 thread::sleep(tm);
                 Ok(())
@@ -31,7 +32,6 @@ impl<T: Send + Sync> PhasedLock<T> {
                 }
                 Err(ws)
             }
-            _ => Ok(()),
         }
     }
 }

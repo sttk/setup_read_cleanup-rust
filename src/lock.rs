@@ -67,11 +67,14 @@ impl<T: Send + Sync> PhasedLock<T> {
         );
 
         if let Err(current_phase) = result {
-            if let Some(_) = mutex_error {
+            if let Some(ref e) = mutex_error {
                 return Err(PhasedError::new(
                     u8_to_phase(current_phase),
                     PhasedErrorKind::MutexIsPoisoned,
-                    "Mutex poisoned during the phase transition to Read.",
+                    &format!(
+                        "Mutex poisoned during the phase transition to Read: {:?}",
+                        e
+                    ),
                 ));
             }
 
