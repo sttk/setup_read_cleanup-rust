@@ -203,8 +203,20 @@ impl<T: Send + Sync> PhasedLock<T> {
     }
 
     pub fn read_gracefully(&self) -> Result<&T, PhasedError> {
-        let phase = self.phase.load(atomic::Ordering::Acquire);
-        if phase != PHASE_READ {
+        let result = self.read_count.fetch_update(
+            atomic::Ordering::AcqRel,
+            atomic::Ordering::Acquire,
+            |c| {
+                let phase = self.phase.load(atomic::Ordering::Acquire);
+                if phase != PHASE_READ {
+                    return None;
+                }
+                Some(c + 1)
+            },
+        );
+
+        if let Err(_) = result {
+            let phase = self.phase.load(atomic::Ordering::Acquire);
             return Err(PhasedError::new(
                 u8_to_phase(phase),
                 PhasedErrorKind::CannotCallOutOfReadPhase(
@@ -214,12 +226,11 @@ impl<T: Send + Sync> PhasedLock<T> {
             ));
         }
 
-        let _ = self.read_count.fetch_add(1, atomic::Ordering::AcqRel);
-
         if let Some(data) = unsafe { &*self.data_fixed.get() }.as_ref() {
             return Ok(data);
         }
 
+        let phase = self.phase.load(atomic::Ordering::Acquire);
         Err(PhasedError::new(
             u8_to_phase(phase),
             PhasedErrorKind::InternalDataIsEmpty,
@@ -239,7 +250,7 @@ impl<T: Send + Sync> PhasedLock<T> {
             ));
         }
 
-        let _ = self.read_count.fetch_update(
+        let _result = self.read_count.fetch_update(
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
             |c| {

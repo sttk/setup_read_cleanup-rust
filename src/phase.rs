@@ -4,7 +4,7 @@
 
 use crate::Phase;
 
-use std::fmt;
+use std::{any, fmt};
 
 pub(crate) const PHASE_SETUP: u8 = 0;
 pub(crate) const PHASE_READ: u8 = 1;
@@ -20,7 +20,15 @@ pub(crate) fn u8_to_phase(phase_code: u8) -> Phase {
     match phase_code {
         PHASE_SETUP => Phase::Setup,
         PHASE_READ => Phase::Read,
-        _ => Phase::Cleanup,
+        PHASE_CLEANUP => Phase::Cleanup,
+        _ => {
+            eprintln!(
+                "{}: Invalid phase code: {}",
+                any::type_name::<Phase>(),
+                phase_code
+            );
+            return Phase::Cleanup;
+        }
     }
 }
 
