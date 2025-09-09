@@ -118,7 +118,7 @@ impl<T: Send + Sync> PhasedLock<T> {
                 return Err(PhasedError::new(
                     Phase::Cleanup,
                     PhasedErrorKind::MutexIsPoisoned,
-                    "Mutex was poisoned during the phase transition to Read.",
+                    "Mutex was poisoned during the phase transition to Cleanup.",
                 ));
             }
         }
@@ -195,7 +195,7 @@ impl<T: Send + Sync> PhasedLock<T> {
         Err(PhasedError::new(
             u8_to_phase(phase),
             PhasedErrorKind::InternalDataIsEmpty,
-            "Failed to retrieve read only data because of empty. Why?",
+            "Failed to retrieve read-only data: internal data is unexpectedly empty.",
         ))
     }
 
@@ -220,7 +220,7 @@ impl<T: Send + Sync> PhasedLock<T> {
         Err(PhasedError::new(
             u8_to_phase(phase),
             PhasedErrorKind::InternalDataIsEmpty,
-            "Failed to retrieve read only data because of empty. Why?",
+            "Failed to retrieve read-only data: internal data is unexpectedly empty.",
         ))
     }
 
