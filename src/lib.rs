@@ -1,14 +1,59 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+// Copyright (C) 2025 Takayuki Sato. All Rights Reserved.
+// This program is free software under MIT License.
+// See the file LICENSE in this distribution for more details.
+
+mod errors;
+mod lock;
+mod phase;
+mod wait;
+
+use std::{cell, marker, sync, sync::atomic, time};
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Phase {
+    Setup,
+    Read,
+    Cleanup,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[derive(Debug, PartialEq, Eq)]
+pub enum PhasedErrorKind {
+    MutexIsPoisoned,
+    TransitionToReadFailed,
+    TransitionToCleanupTimeout(WaitStrategy),
+    GracefulPhaseTransitionIsInProgress,
+    InternalDataIsEmpty,
+    CannotCallInSetupPhase(String),
+    CannotCallInReadPhase(String),
+    CannotCallOutOfReadPhase(String),
+    CannotCallOnTokioRuntime(String),
+}
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+pub struct PhasedError {
+    pub phase: Phase,
+    pub kind: PhasedErrorKind,
+    pub message: String,
+}
+
+pub struct PhasedLock<T: Send + Sync> {
+    phase: atomic::AtomicU8,
+    read_count: atomic::AtomicUsize,
+    data_mutex: sync::Mutex<Option<T>>,
+    data_fixed: cell::UnsafeCell<Option<T>>,
+    _marker: marker::PhantomData<T>,
+}
+
+pub struct PhasedMutexGuard<'mutex, T> {
+    inner: sync::MutexGuard<'mutex, Option<T>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitStrategy {
+    NoWait,
+    FixedWait(time::Duration),
+    GracefulWait {
+        first: time::Duration,
+        interval: time::Duration,
+        timeout: time::Duration,
+    },
 }
