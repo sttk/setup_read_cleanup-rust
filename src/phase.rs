@@ -23,7 +23,7 @@ pub(crate) fn u8_to_phase(phase_code: u8) -> Phase {
         PHASE_CLEANUP => Phase::Cleanup,
         _ => {
             eprintln!(
-                "{}: Invalid phase code: {}",
+                "{} is passed an invalid phase code: {}",
                 any::type_name::<Phase>(),
                 phase_code
             );

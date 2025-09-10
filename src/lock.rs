@@ -6,7 +6,7 @@ use crate::phase::{u8_to_phase, PHASE_CLEANUP, PHASE_READ, PHASE_SETUP};
 use crate::{Phase, PhasedError, PhasedErrorKind, PhasedLock, PhasedMutexGuard, WaitStrategy};
 
 use std::ops::{Deref, DerefMut};
-use std::{cell, marker, mem, sync, sync::atomic};
+use std::{any, cell, marker, mem, sync, sync::atomic};
 
 macro_rules! cannot_call_on_tokio_runtime {
     ( $plock:ident, $method:literal ) => {
@@ -250,7 +250,7 @@ impl<T: Send + Sync> PhasedLock<T> {
             ));
         }
 
-        let _result = self.read_count.fetch_update(
+        let result = self.read_count.fetch_update(
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
             |c| {
@@ -260,6 +260,13 @@ impl<T: Send + Sync> PhasedLock<T> {
                 Some(c - 1)
             },
         );
+
+        if let Err(_) = result {
+            eprintln!(
+                "{}::finish_reading_gracefully is called excessively.",
+                any::type_name::<PhasedLock<T>>(),
+            );
+        }
 
         Ok(())
     }
