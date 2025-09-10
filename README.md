@@ -9,11 +9,11 @@ The `Read` phase allows the internal data to be treated as read-only without exc
 
 In this `PhasedLock`, an atomic variable is used to determine the phase.
 Atomic variables control the strictness of read and write ordering through `Ordering` specifications; however, stricter settings incur higher costs.
-Taking this into account, this create provide two pairs of methods: `read_fast` and `phase_fast`, which prioritize speed over strictness, and `read_gracefully` and `phase_exact`, which prioritize strictness over speed.
+Taking this into account, this crate provide two pairs of methods: `read_fast` and `phase_fast`, which prioritize speed over strictness, and `read_gracefully` and `phase_exact`, which prioritize strictness over speed.
 
-In the transition from the `Read` to the` Cleanup` phase, this crate provide a "graceful wait" mechanism that waits for operations on data acquired within the `Read` phase to finish.
+In the transition from the `Read` to the `Cleanup` phase, this crate provides a "graceful wait" mechanism that waits for operations on data acquired within the `Read` phase to finish.
 After acquiring the data using the `PhasedLock#read_gracefully` method, you call the `PhasedLock#finish_reading_gracefully` method to tell the `PhasedLock` that processing the data is complete.
-By making the transition to the `Cleanup` phase wait until `PhasedLock#finish_reading_lock` is executed in a way that pairs with `PhasedLock#read_gracefully` in each multiple thread, the internal data can be updated safely.
+By making the transition to the `Cleanup` phase wait until `PhasedLock#finish_reading_gracefully` is executed in a way that pairs with `PhasedLock#read_gracefully` in each multiple thread, the internal data can be updated safely.
 
 ## Installation
 
