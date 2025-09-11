@@ -7,7 +7,7 @@ mod lock;
 mod phase;
 mod wait;
 
-use std::{cell, marker, sync, sync::atomic, time};
+use std::{cell, error, marker, sync, sync::atomic, time};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -21,6 +21,7 @@ pub enum PhasedErrorKind {
     MutexIsPoisoned,
     TransitionToReadFailed,
     TransitionToCleanupTimeout(WaitStrategy),
+    FailToRunClosureDuringTransitionToRead,
     GracefulPhaseTransitionIsInProgress,
     InternalDataIsEmpty,
     CannotCallInSetupPhase(String),
@@ -32,7 +33,7 @@ pub enum PhasedErrorKind {
 pub struct PhasedError {
     pub phase: Phase,
     pub kind: PhasedErrorKind,
-    pub message: String,
+    pub source: Option<Box<dyn error::Error + Send + Sync>>,
 }
 
 pub struct PhasedLock<T: Send + Sync> {

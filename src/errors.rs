@@ -4,28 +4,37 @@
 
 use crate::{Phase, PhasedError, PhasedErrorKind};
 
-use std::{any, fmt};
+use std::{any, error, fmt};
 
 impl PhasedError {
-    pub(crate) fn new(phase: Phase, kind: PhasedErrorKind, message: &str) -> Self {
+    pub(crate) fn new(phase: Phase, kind: PhasedErrorKind) -> Self {
         Self {
             phase,
             kind,
-            message: message.to_string(),
+            source: None,
+        }
+    }
+
+    pub(crate) fn with_source<E>(phase: Phase, kind: PhasedErrorKind, e: E) -> Self
+    where
+        E: error::Error + Send + Sync + 'static,
+    {
+        Self {
+            phase,
+            kind,
+            source: Some(Box::new(e)),
         }
     }
 }
 
 impl fmt::Debug for PhasedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} {{ phase: {}, kind: {:?}, message: {:?} }}",
-            any::type_name::<PhasedError>(),
-            self.phase,
-            self.kind,
-            self.message,
-        )
+        write!(f, "{} {{ ", any::type_name::<PhasedError>())?;
+        write!(f, "phase: {}, kind: {:?}", self.phase, self.kind)?;
+        if let Some(source) = &self.source {
+            write!(f, ", source: {:?}", source)?;
+        }
+        write!(f, " }}")
     }
 }
 
@@ -37,15 +46,11 @@ mod tests_of_phased_error {
 
     #[test]
     fn test_new() {
-        let e = PhasedError::new(
-            Phase::Setup,
-            PhasedErrorKind::TransitionToReadFailed,
-            "Fail to do something.",
-        );
+        let e = PhasedError::new(Phase::Setup, PhasedErrorKind::TransitionToReadFailed);
 
         assert_eq!(e.phase, Phase::Setup);
         assert_eq!(e.kind, PhasedErrorKind::TransitionToReadFailed);
-        assert_eq!(e.message, "Fail to do something.");
+        assert!(e.source.is_none());
     }
 
     #[test]
@@ -57,12 +62,11 @@ mod tests_of_phased_error {
                 interval: time::Duration::from_millis(10),
                 timeout: time::Duration::from_secs(5),
             }),
-            "Fail to do something.",
         );
 
         assert_eq!(
             format!("{e:?}"),
-            "setup_read_cleanup::PhasedError { phase: Setup, kind: TransitionToCleanupTimeout(GracefulWait { first: 1s, interval: 10ms, timeout: 5s }), message: \"Fail to do something.\" }"
+            "setup_read_cleanup::PhasedError { phase: Setup, kind: TransitionToCleanupTimeout(GracefulWait { first: 1s, interval: 10ms, timeout: 5s }) }"
         );
     }
 }

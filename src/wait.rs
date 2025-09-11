@@ -7,7 +7,7 @@ use crate::{PhasedLock, WaitStrategy};
 use std::{sync::atomic, thread, time};
 
 impl<T: Send + Sync> PhasedLock<T> {
-    pub fn wait_gracefully(&self, ws: WaitStrategy) -> Result<(), WaitStrategy> {
+    pub fn wait_with_strategy(&self, ws: WaitStrategy) -> Result<(), WaitStrategy> {
         match ws {
             WaitStrategy::NoWait => Ok(()),
             WaitStrategy::FixedWait(tm) => {
@@ -48,7 +48,7 @@ mod tests_of_wait_strategy {
         let ws = WaitStrategy::NoWait;
 
         let start = time::Instant::now();
-        let result = pl.wait_gracefully(ws);
+        let result = pl.wait_with_strategy(ws);
         let elapsed = start.elapsed();
 
         println!("elapsed = {elapsed:?}");
@@ -63,7 +63,7 @@ mod tests_of_wait_strategy {
         let ws = WaitStrategy::FixedWait(time::Duration::from_millis(100));
 
         let start = time::Instant::now();
-        let result = pl.wait_gracefully(ws);
+        let result = pl.wait_with_strategy(ws);
         let elapsed = start.elapsed();
 
         println!("elapsed = {elapsed:?}");
@@ -89,7 +89,7 @@ mod tests_of_wait_strategy {
         };
 
         let start = time::Instant::now();
-        let result = pl.wait_gracefully(ws);
+        let result = pl.wait_with_strategy(ws);
         let elapsed = start.elapsed();
 
         println!("elapsed = {elapsed:?}");
@@ -132,7 +132,7 @@ mod tests_of_wait_strategy {
         };
 
         let start = time::Instant::now();
-        let result = pl.wait_gracefully(ws);
+        let result = pl.wait_with_strategy(ws);
         let elapsed = start.elapsed();
 
         println!("elapsed = {elapsed:?}");
@@ -174,7 +174,7 @@ mod tests_of_wait_strategy {
         });
 
         let start = time::Instant::now();
-        let result = pl_2.wait_gracefully(ws);
+        let result = pl_2.wait_with_strategy(ws);
         let elapsed = start.elapsed();
         assert_eq!(pl_2.read_count.load(atomic::Ordering::Acquire), 0);
 
@@ -226,7 +226,7 @@ mod tests_of_wait_strategy {
         }
 
         let start = time::Instant::now();
-        let result = pl_1.wait_gracefully(ws);
+        let result = pl_1.wait_with_strategy(ws);
         let elapsed = start.elapsed();
 
         println!("elapsed = {elapsed:?}");
