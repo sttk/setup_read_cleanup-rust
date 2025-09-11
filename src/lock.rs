@@ -1170,8 +1170,8 @@ mod tests_of_phase_lock {
         #[derive(Debug)]
         struct MyError {}
         impl fmt::Display for MyError {
-            fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-                todo!()
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+                write!(f, "MyError occured")
             }
         }
         impl error::Error for MyError {}
