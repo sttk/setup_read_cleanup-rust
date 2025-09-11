@@ -26,6 +26,15 @@ unsafe impl<T: Send + Sync> Sync for PhasedLock<T> {}
 unsafe impl<T: Send + Sync> Send for PhasedLock<T> {}
 
 impl<T: Send + Sync> PhasedLock<T> {
+    /// Creates a new `PhasedLock` with the given data.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use setup_read_cleanup::PhasedLock;
+    ///
+    /// let lock = PhasedLock::new(5);
+    /// ```
     pub const fn new(data: T) -> Self {
         Self {
             phase: atomic::AtomicU8::new(PHASE_SETUP),
@@ -36,6 +45,17 @@ impl<T: Send + Sync> PhasedLock<T> {
         }
     }
 
+    /// Transitions the `PhasedLock` to the Read phase.
+    ///
+    /// This method takes a closure that can modify the data before it becomes
+    /// read-only. If the closure returns an error, the transition is aborted.
+    ///
+    /// # Errors
+    ///
+    /// This method returns an error if:
+    /// - The current phase is not Setup.
+    /// - The mutex is poisoned.
+    /// - The closure returns an error.
     pub fn transition_to_read<F, E>(&self, mut f: F) -> Result<(), PhasedError>
     where
         F: FnMut(&mut T) -> Result<(), E>,
@@ -102,6 +122,16 @@ impl<T: Send + Sync> PhasedLock<T> {
         Ok(())
     }
 
+    /// Transitions the `PhasedLock` to the Cleanup phase.
+    ///
+    /// This method takes a `WaitStrategy` that determines how to wait for
+    /// readers to finish.
+    ///
+    /// # Errors
+    ///
+    /// This method returns an error if:
+    /// - The mutex is poisoned.
+    /// - The wait strategy times out.
     pub fn transition_to_cleanup(&self, wait_strategy: WaitStrategy) -> Result<(), PhasedError> {
         cannot_call_on_tokio_runtime!(self, "PhasedLock::transition_to_cleanup");
 
@@ -147,16 +177,30 @@ impl<T: Send + Sync> PhasedLock<T> {
         Ok(())
     }
 
+    /// Returns the current phase of the `PhasedLock` without any memory ordering
+    /// guarantees.
     pub fn phase_fast(&self) -> Phase {
         let phase = self.phase.load(atomic::Ordering::Relaxed);
         u8_to_phase(phase)
     }
 
+    /// Returns the current phase of the `PhasedLock` with `Acquire` memory
+    /// ordering.
     pub fn phase_exact(&self) -> Phase {
         let phase = self.phase.load(atomic::Ordering::Acquire);
         u8_to_phase(phase)
     }
 
+    /// Locks the `PhasedLock` for updating.
+    ///
+    /// This method can only be called in the Setup or Cleanup phase.
+    ///
+    /// # Errors
+    ///
+    /// This method returns an error if:
+    /// - The current phase is Read.
+    /// - The mutex is poisoned.
+    /// - A graceful phase transition is in progress.
     pub fn lock_for_update(&self) -> Result<PhasedMutexGuard<'_, T>, PhasedError> {
         cannot_call_on_tokio_runtime!(self, "PhasedLock::lock_for_update");
 
@@ -188,6 +232,15 @@ impl<T: Send + Sync> PhasedLock<T> {
         }
     }
 
+    /// Reads the data in the `PhasedLock` without any memory ordering guarantees.
+    ///
+    /// This method can only be called in the Read phase.
+    ///
+    /// # Errors
+    ///
+    /// This method returns an error if:
+    /// - The current phase is not Read.
+    /// - The internal data is empty.
     pub fn read_fast(&self) -> Result<&T, PhasedError> {
         let phase = self.phase.load(atomic::Ordering::Relaxed);
         if phase != PHASE_READ {
@@ -207,6 +260,17 @@ impl<T: Send + Sync> PhasedLock<T> {
         ))
     }
 
+    /// Reads the data in the `PhasedLock` with `Acquire` memory ordering.
+    ///
+    /// This method can only be called in the Read phase. It increments a read
+    /// count that is used to wait for readers to finish during a transition to
+    /// the Cleanup phase.
+    ///
+    /// # Errors
+    ///
+    /// This method returns an error if:
+    /// - The current phase is not Read.
+    /// - The internal data is empty.
     pub fn read_gracefully(&self) -> Result<&T, PhasedError> {
         let result = self.read_count.fetch_update(
             atomic::Ordering::AcqRel,
@@ -241,6 +305,14 @@ impl<T: Send + Sync> PhasedLock<T> {
         ))
     }
 
+    /// Finishes reading the data in the `PhasedLock` gracefully.
+    ///
+    /// This method decrements the read count that is used to wait for readers
+    /// to finish during a transition to the Cleanup phase.
+    ///
+    /// # Errors
+    ///
+    /// This method returns an error if the current phase is Setup.
     pub fn finish_reading_gracefully(&self) -> Result<(), PhasedError> {
         let phase = self.phase.load(atomic::Ordering::Acquire);
         if phase == PHASE_SETUP {
@@ -275,6 +347,10 @@ impl<T: Send + Sync> PhasedLock<T> {
 }
 
 impl<'mutex, T> PhasedMutexGuard<'mutex, T> {
+    /// Tries to create a new `PhasedMutexGuard` from a `MutexGuard` of an
+    /// `Option<T>`.
+    ///
+    /// If the `Option` is `None`, this method returns `None`.
     pub fn try_new(guarded_option: sync::MutexGuard<'mutex, Option<T>>) -> Option<Self> {
         if guarded_option.is_some() {
             Some(Self {
