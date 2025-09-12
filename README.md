@@ -127,6 +127,7 @@ The `WaitStrategy::GracefulWait` option ensures that the lock will wait for all 
 
 ```rust
 use setup_read_cleanup::WaitStrategy;
+use std::time;
 
 // ... (code continued from above) ...
 
