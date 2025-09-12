@@ -22,7 +22,6 @@
 //!
 //! ```
 //! use setup_read_cleanup::{PhasedLock, WaitStrategy};
-//! use std::sync::Arc;
 //! use std::{error, fmt, thread};
 //!
 //! struct MyData {
