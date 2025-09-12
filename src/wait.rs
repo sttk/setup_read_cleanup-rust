@@ -7,6 +7,14 @@ use crate::{PhasedLock, WaitStrategy};
 use std::{sync::atomic, thread, time};
 
 impl<T: Send + Sync> PhasedLock<T> {
+    /// Waits with the given strategy.
+    ///
+    /// This method is used to wait for readers to finish before transitioning
+    /// to the Cleanup phase.
+    ///
+    /// # Errors
+    ///
+    /// This method returns an error if the wait strategy times out.
     pub fn wait_with_strategy(&self, ws: WaitStrategy) -> Result<(), WaitStrategy> {
         match ws {
             WaitStrategy::NoWait => Ok(()),
