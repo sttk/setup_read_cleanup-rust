@@ -6,7 +6,7 @@ use crate::phase::{u8_to_phase, PHASE_CLEANUP, PHASE_READ, PHASE_SETUP};
 use crate::{Phase, PhasedError, PhasedErrorKind, PhasedLock, PhasedMutexGuard, WaitStrategy};
 
 use std::ops::{Deref, DerefMut};
-use std::{any, cell, error, marker, mem, sync, sync::atomic};
+use std::{any, cell, error, marker, sync, sync::atomic};
 
 macro_rules! cannot_call_on_tokio_runtime {
     ( $plock:ident, $method:literal ) => {
@@ -77,12 +77,12 @@ impl<T: Send + Sync> PhasedLock<T> {
                 match self.data_mutex.lock() {
                     Ok(mut data_opt) => {
                         if data_opt.is_some() {
-                            if let Err(e) = f(&mut data_opt.as_mut().unwrap()) {
+                            if let Err(e) = f(data_opt.as_mut().unwrap()) {
                                 closure_error = Some(e);
                                 return None;
                             }
                             unsafe {
-                                mem::swap(&mut *self.data_fixed.get(), &mut *data_opt);
+                                core::ptr::swap(self.data_fixed.get(), &mut *data_opt);
                             }
                         }
                         Some(PHASE_READ)
@@ -155,7 +155,7 @@ impl<T: Send + Sync> PhasedLock<T> {
             Ok(mut data_opt) => {
                 if data_opt.is_none() {
                     unsafe {
-                        mem::swap(&mut *self.data_fixed.get(), &mut *data_opt);
+                        core::ptr::swap(self.data_fixed.get(), &mut *data_opt);
                     }
                 }
             }
@@ -215,19 +215,19 @@ impl<T: Send + Sync> PhasedLock<T> {
         match self.data_mutex.lock() {
             Ok(guarded_opt) => {
                 if let Some(new_guard) = PhasedMutexGuard::try_new(guarded_opt) {
-                    return Ok(new_guard);
+                    Ok(new_guard)
                 } else {
-                    return Err(PhasedError::new(
+                    Err(PhasedError::new(
                         u8_to_phase(phase),
                         PhasedErrorKind::GracefulPhaseTransitionIsInProgress,
-                    ));
+                    ))
                 }
             }
             Err(_e) => {
-                return Err(PhasedError::new(
+                Err(PhasedError::new(
                     u8_to_phase(phase),
                     PhasedErrorKind::MutexIsPoisoned,
-                ));
+                ))
             }
         }
     }
@@ -284,7 +284,7 @@ impl<T: Send + Sync> PhasedLock<T> {
             },
         );
 
-        if let Err(_) = result {
+        if result.is_err() {
             let phase = self.phase.load(atomic::Ordering::Acquire);
             return Err(PhasedError::new(
                 u8_to_phase(phase),
@@ -335,7 +335,7 @@ impl<T: Send + Sync> PhasedLock<T> {
             },
         );
 
-        if let Err(_) = result {
+        if result.is_err() {
             eprintln!(
                 "{}::finish_reading_gracefully is called excessively.",
                 any::type_name::<PhasedLock<T>>(),
