@@ -21,7 +21,7 @@ In Cargo.toml, write this crate as a dependency:
 
 ```toml
 [dependencies]
-setup_read_cleanup = "0.0.0"
+setup_read_cleanup = "0.1.0"
 ```
 
 ## Usage
@@ -195,7 +195,7 @@ See the file LICENSE in this distribution for more details.
 
 
 [repo-url]: https://github.com/sttk/setup_read_cleanup-rust
-[cratesio-img]: https://img.shields.io/badge/crates.io-ver.0.0.0-fc8d62?logo=rust
+[cratesio-img]: https://img.shields.io/badge/crates.io-ver.0.1.0-fc8d62?logo=rust
 [cratesio-url]: https://crates.io/crates/setup_read_cleanup
 [docrs-img]: https://img.shields.io/badge/doc.rs-setup_read_cleanup-66c2a5?logo=docs.rs
 [docrs-url]: https://docs.rs/setup_read_cleanup

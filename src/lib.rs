@@ -20,7 +20,7 @@
 //!
 //! # Example
 //!
-//! ```
+//! ```rust
 //! use setup_read_cleanup::{PhasedLock, WaitStrategy};
 //! use std::{error, fmt, thread};
 //!
