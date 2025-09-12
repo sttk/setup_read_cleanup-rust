@@ -27,7 +27,7 @@ pub(crate) fn u8_to_phase(phase_code: u8) -> Phase {
                 any::type_name::<Phase>(),
                 phase_code
             );
-            return Phase::Cleanup;
+            Phase::Cleanup
         }
     }
 }
