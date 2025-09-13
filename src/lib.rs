@@ -97,6 +97,10 @@ pub enum PhasedErrorKind {
     MutexIsPoisoned,
     /// An error indicating that a phase transition to the Read phase failed.
     TransitionToReadFailed,
+    /// An error indicating that the phase is already in the Read phase.
+    PhaseIsAlreadyRead,
+    /// An error indicating that a transition to the Read phase is currently in progress.
+    DuringTransitionToRead,
     /// An error indicating that a phase transition to the Cleanup phase timed out.
     TransitionToCleanupTimeout(WaitStrategy),
     /// An error indicating that a closure failed to run during a phase

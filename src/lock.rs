@@ -2,7 +2,7 @@
 // This program is free software under MIT License.
 // See the file LICENSE in this distribution for more details.
 
-use crate::phase::{u8_to_phase, PHASE_CLEANUP, PHASE_READ, PHASE_SETUP};
+use crate::phase::{u8_to_phase, PHASE_CLEANUP, PHASE_READ, PHASE_SETUP, PHASE_SETUP_TO_READ};
 use crate::{Phase, PhasedError, PhasedErrorKind, PhasedLock, PhasedMutexGuard, WaitStrategy};
 
 use std::ops::{Deref, DerefMut};
@@ -63,63 +63,52 @@ impl<T: Send + Sync> PhasedLock<T> {
     {
         cannot_call_on_tokio_runtime!(self, "PhasedLock::transition_to_read");
 
-        let mut mutex_error: Option<sync::PoisonError<sync::MutexGuard<'_, Option<T>>>> = None;
-        let mut closure_error: Option<E> = None;
-
-        let result = self.phase.fetch_update(
+        match self.phase.compare_exchange(
+            PHASE_SETUP,
+            PHASE_SETUP_TO_READ,
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
-            |current_phase| {
-                if current_phase != PHASE_SETUP {
-                    return None;
-                }
-
-                match self.data_mutex.lock() {
-                    Ok(mut data_opt) => {
-                        if data_opt.is_some() {
-                            if let Err(e) = f(data_opt.as_mut().unwrap()) {
-                                closure_error = Some(e);
-                                return None;
-                            }
-                            unsafe {
-                                core::ptr::swap(self.data_fixed.get(), &mut *data_opt);
-                            }
+        ) {
+            Ok(new_phase_cd) => match self.data_mutex.lock() {
+                Ok(mut data_opt) => {
+                    if data_opt.is_some() {
+                        if let Err(e) = f(data_opt.as_mut().unwrap()) {
+                            return Err(PhasedError::with_source(
+                                u8_to_phase(new_phase_cd),
+                                PhasedErrorKind::FailToRunClosureDuringTransitionToRead,
+                                e,
+                            ));
                         }
-                        Some(PHASE_READ)
+
+                        unsafe {
+                            core::ptr::swap(self.data_fixed.get(), &mut *data_opt);
+                        }
+
+                        let _ = self.phase.compare_exchange(
+                            PHASE_SETUP_TO_READ,
+                            PHASE_READ,
+                            atomic::Ordering::AcqRel,
+                            atomic::Ordering::Acquire,
+                        );
                     }
-                    Err(e) => {
-                        mutex_error = Some(e);
-                        None
-                    }
+
+                    Ok(())
                 }
-            },
-        );
-
-        if let Err(current_phase) = result {
-            if let Some(_e) = mutex_error {
-                return Err(PhasedError::new(
-                    u8_to_phase(current_phase),
+                Err(_e) => Err(PhasedError::new(
+                    u8_to_phase(new_phase_cd),
                     PhasedErrorKind::MutexIsPoisoned,
-                ));
-            }
+                )),
+            },
+            Err(old_phase_cd) => {
+                let kind = match old_phase_cd {
+                    PHASE_READ => PhasedErrorKind::PhaseIsAlreadyRead,
+                    PHASE_SETUP_TO_READ => PhasedErrorKind::DuringTransitionToRead,
+                    _ => PhasedErrorKind::TransitionToReadFailed,
+                };
 
-            if let Some(e) = closure_error {
-                return Err(PhasedError::with_source(
-                    u8_to_phase(current_phase),
-                    PhasedErrorKind::FailToRunClosureDuringTransitionToRead,
-                    e,
-                ));
-            }
-
-            if current_phase == PHASE_CLEANUP {
-                return Err(PhasedError::new(
-                    Phase::Cleanup,
-                    PhasedErrorKind::TransitionToReadFailed,
-                ));
+                Err(PhasedError::new(u8_to_phase(old_phase_cd), kind))
             }
         }
-
-        Ok(())
     }
 
     /// Transitions the `PhasedLock` to the Cleanup phase.
@@ -223,12 +212,10 @@ impl<T: Send + Sync> PhasedLock<T> {
                     ))
                 }
             }
-            Err(_e) => {
-                Err(PhasedError::new(
-                    u8_to_phase(phase),
-                    PhasedErrorKind::MutexIsPoisoned,
-                ))
-            }
+            Err(_e) => Err(PhasedError::new(
+                u8_to_phase(phase),
+                PhasedErrorKind::MutexIsPoisoned,
+            )),
         }
     }
 
@@ -552,9 +539,14 @@ mod tests_of_phase_lock {
             assert_eq!(my_struct.phase_fast(), Phase::Read);
 
             if let Err(e) = my_struct.transition_to_read(my_func) {
-                panic!("{:?}", e);
+                assert_eq!(
+                    format!("{e:?}"),
+                    "setup_read_cleanup::PhasedError { phase: Read, kind: PhaseIsAlreadyRead }"
+                );
+                assert_eq!(e.kind, PhasedErrorKind::PhaseIsAlreadyRead);
+            } else {
+                panic!();
             }
-            assert_eq!(my_struct.phase_fast(), Phase::Read);
         }
 
         #[test]
@@ -584,9 +576,14 @@ mod tests_of_phase_lock {
             assert_eq!(my_struct.phase_fast(), Phase::Read);
 
             if let Err(e) = my_struct.transition_to_read(my_func) {
-                panic!("{:?}", e);
+                assert_eq!(
+                    format!("{e:?}"),
+                    "setup_read_cleanup::PhasedError { phase: Read, kind: PhaseIsAlreadyRead }"
+                );
+                assert_eq!(e.kind, PhasedErrorKind::PhaseIsAlreadyRead);
+            } else {
+                panic!();
             }
-            assert_eq!(my_struct.phase_fast(), Phase::Read);
 
             if let Err(e) = my_struct.transition_to_cleanup(WaitStrategy::NoWait) {
                 panic!("{:?}", e);

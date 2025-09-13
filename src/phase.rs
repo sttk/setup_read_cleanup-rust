@@ -9,6 +9,7 @@ use std::{any, fmt};
 pub(crate) const PHASE_SETUP: u8 = 0;
 pub(crate) const PHASE_READ: u8 = 1;
 pub(crate) const PHASE_CLEANUP: u8 = 2;
+pub(crate) const PHASE_SETUP_TO_READ: u8 = 3;
 
 impl fmt::Display for Phase {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -21,6 +22,7 @@ pub(crate) fn u8_to_phase(phase_code: u8) -> Phase {
         PHASE_SETUP => Phase::Setup,
         PHASE_READ => Phase::Read,
         PHASE_CLEANUP => Phase::Cleanup,
+        PHASE_SETUP_TO_READ => Phase::Setup,
         _ => {
             eprintln!(
                 "{} is passed an invalid phase code: {}",
@@ -55,6 +57,7 @@ mod tests_of_phase {
         assert_eq!(u8_to_phase(PHASE_SETUP), Phase::Setup);
         assert_eq!(u8_to_phase(PHASE_READ), Phase::Read);
         assert_eq!(u8_to_phase(PHASE_CLEANUP), Phase::Cleanup);
+        assert_eq!(u8_to_phase(PHASE_SETUP_TO_READ), Phase::Setup);
         assert_eq!(u8_to_phase(10), Phase::Cleanup);
     }
 }
