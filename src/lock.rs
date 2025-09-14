@@ -73,6 +73,7 @@ impl<T: Send + Sync> PhasedLock<T> {
                 Ok(mut data_opt) => {
                     if data_opt.is_some() {
                         if let Err(e) = f(data_opt.as_mut().unwrap()) {
+                            // rollback phase transition
                             let _result = self.phase.compare_exchange(
                                 PHASE_SETUP_TO_READ,
                                 PHASE_SETUP,
@@ -101,10 +102,20 @@ impl<T: Send + Sync> PhasedLock<T> {
 
                     Ok(())
                 }
-                Err(_e) => Err(PhasedError::new(
-                    u8_to_phase(old_phase_cd),
-                    PhasedErrorKind::MutexIsPoisoned,
-                )),
+                Err(_e) => {
+                    // rollback phase transition
+                    let _result = self.phase.compare_exchange(
+                        PHASE_SETUP_TO_READ,
+                        PHASE_SETUP,
+                        atomic::Ordering::AcqRel,
+                        atomic::Ordering::Acquire,
+                    );
+
+                    Err(PhasedError::new(
+                        u8_to_phase(old_phase_cd),
+                        PhasedErrorKind::MutexIsPoisoned,
+                    ))
+                },
             },
             Err(old_phase_cd) => {
                 let kind = match old_phase_cd {
