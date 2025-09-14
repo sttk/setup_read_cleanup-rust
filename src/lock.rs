@@ -73,6 +73,13 @@ impl<T: Send + Sync> PhasedLock<T> {
                 Ok(mut data_opt) => {
                     if data_opt.is_some() {
                         if let Err(e) = f(data_opt.as_mut().unwrap()) {
+                            let _result = self.phase.compare_exchange(
+                                PHASE_SETUP_TO_READ,
+                                PHASE_SETUP,
+                                atomic::Ordering::AcqRel,
+                                atomic::Ordering::Acquire,
+                            );
+
                             return Err(PhasedError::with_source(
                                 u8_to_phase(PHASE_SETUP_TO_READ),
                                 PhasedErrorKind::FailToRunClosureDuringTransitionToRead,
@@ -84,7 +91,7 @@ impl<T: Send + Sync> PhasedLock<T> {
                             core::ptr::swap(self.data_fixed.get(), &mut *data_opt);
                         }
 
-                        let _ = self.phase.compare_exchange(
+                        let _result = self.phase.compare_exchange(
                             PHASE_SETUP_TO_READ,
                             PHASE_READ,
                             atomic::Ordering::AcqRel,
