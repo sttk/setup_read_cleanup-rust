@@ -958,7 +958,13 @@ mod tests_of_phase_lock {
             let my_struct = PhasedLock::new(MyStruct::new());
 
             if let Err(e) = my_struct.lock_for_update() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallOnTokioRuntime(\"PhasedLock::lock_for_update\") }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallOnTokioRuntime(
+                        "PhasedLock::lock_for_update".to_string()
+                    )
+                );
             } else {
                 panic!();
             }
@@ -987,7 +993,11 @@ mod tests_of_phase_lock {
             let my_struct = PhasedLock::new(MyStruct::new());
 
             if let Err(e) = my_struct.read_fast() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallOutOfReadPhase(\"PhasedLock::read_fast\") }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallOutOfReadPhase("PhasedLock::read_fast".to_string())
+                );
             } else {
                 panic!();
             }
@@ -998,7 +1008,13 @@ mod tests_of_phase_lock {
             let my_struct = PhasedLock::new(MyStruct::new());
 
             if let Err(e) = my_struct.read_gracefully() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallOutOfReadPhase(\"PhasedLock::read_gracefully\") }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallOutOfReadPhase(
+                        "PhasedLock::read_gracefully".to_string()
+                    )
+                );
             } else {
                 panic!();
             }
@@ -1009,7 +1025,13 @@ mod tests_of_phase_lock {
             let my_struct = PhasedLock::new(MyStruct::new());
 
             if let Err(e) = my_struct.finish_reading_gracefully() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallInSetupPhase(\"PhasedLock::finish_reading_gracefully\") }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallInSetupPhase(
+                        "PhasedLock::finish_reading_gracefully".to_string()
+                    )
+                );
             } else {
                 panic!();
             }
@@ -1110,7 +1132,13 @@ mod tests_of_phase_lock {
                     panic!();
                 }
                 Err(e) => {
-                    assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Read, kind: CannotCallInReadPhase(\"PhasedLock::lock_for_update\") }");
+                    assert_eq!(e.phase, Phase::Read);
+                    assert_eq!(
+                        e.kind,
+                        PhasedErrorKind::CannotCallInReadPhase(
+                            "PhasedLock::lock_for_update".to_string()
+                        )
+                    );
                 }
             }
 
@@ -1321,7 +1349,11 @@ mod tests_of_phase_lock {
             assert_eq!(my_struct.phase_fast(), Phase::Cleanup);
 
             if let Err(e) = my_struct.read_fast() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Cleanup, kind: CannotCallOutOfReadPhase(\"PhasedLock::read_fast\") }");
+                assert_eq!(e.phase, Phase::Cleanup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallOutOfReadPhase("PhasedLock::read_fast".to_string())
+                );
             } else {
                 panic!();
             }
@@ -1341,7 +1373,13 @@ mod tests_of_phase_lock {
             assert_eq!(my_struct.phase_fast(), Phase::Cleanup);
 
             if let Err(e) = my_struct.read_gracefully() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Cleanup, kind: CannotCallOutOfReadPhase(\"PhasedLock::read_gracefully\") }");
+                assert_eq!(e.phase, Phase::Cleanup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallOutOfReadPhase(
+                        "PhasedLock::read_gracefully".to_string()
+                    )
+                );
             } else {
                 panic!();
             }
@@ -1433,7 +1471,7 @@ mod tests_of_phase_lock {
 
             let start = time::Instant::now();
             if let Err(e) = my_struct.transition_to_cleanup(ws) {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Cleanup, kind: TransitionToCleanupTimeout(GracefulWait { timeout: 2s }) }");
+                assert_eq!(e.phase, Phase::Cleanup);
                 assert_eq!(e.kind, PhasedErrorKind::TransitionToCleanupTimeout(ws));
             } else {
                 panic!();
@@ -1493,7 +1531,13 @@ mod tests_of_phase_lock {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
                 if let Err(e) = my_struct.lock_for_update() {
-                    assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Cleanup, kind: CannotCallOnTokioRuntime(\"PhasedLock::lock_for_update\") }");
+                    assert_eq!(e.phase, Phase::Cleanup);
+                    assert_eq!(
+                        e.kind,
+                        PhasedErrorKind::CannotCallOnTokioRuntime(
+                            "PhasedLock::lock_for_update".to_string()
+                        )
+                    );
                 } else {
                     panic!();
                 }
@@ -1550,10 +1594,15 @@ mod tests_of_phase_lock {
             assert_eq!(my_struct.phase_fast(), Phase::Setup);
 
             if let Err(e) = my_struct.transition_to_read(|data| data.set_flag(false)) {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: FailToRunClosureDuringTransitionToRead, source: MyError }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::FailToRunClosureDuringTransitionToRead
+                );
+                assert!(e.source.is_some());
                 match e.source {
                     Some(s) => {
-                        let _err: &MyError = &s.downcast::<MyError>().unwrap();
+                        let _err: &MyError = s.downcast_ref::<MyError>().unwrap();
                     }
                     None => panic!(),
                 }
@@ -1562,7 +1611,11 @@ mod tests_of_phase_lock {
             }
 
             if let Err(e) = my_struct.read_fast() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallOutOfReadPhase(\"PhasedLock::read_fast\") }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallOutOfReadPhase("PhasedLock::read_fast".to_string())
+                );
             } else {
                 panic!();
             }
