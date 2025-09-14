@@ -69,12 +69,12 @@ impl<T: Send + Sync> PhasedLock<T> {
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
         ) {
-            Ok(new_phase_cd) => match self.data_mutex.lock() {
+            Ok(old_phase_cd) => match self.data_mutex.lock() {
                 Ok(mut data_opt) => {
                     if data_opt.is_some() {
                         if let Err(e) = f(data_opt.as_mut().unwrap()) {
                             return Err(PhasedError::with_source(
-                                u8_to_phase(new_phase_cd),
+                                u8_to_phase(PHASE_SETUP_TO_READ),
                                 PhasedErrorKind::FailToRunClosureDuringTransitionToRead,
                                 e,
                             ));
@@ -95,7 +95,7 @@ impl<T: Send + Sync> PhasedLock<T> {
                     Ok(())
                 }
                 Err(_e) => Err(PhasedError::new(
-                    u8_to_phase(new_phase_cd),
+                    u8_to_phase(old_phase_cd),
                     PhasedErrorKind::MutexIsPoisoned,
                 )),
             },
