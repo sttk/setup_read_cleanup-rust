@@ -75,7 +75,6 @@
 mod errors;
 mod lock;
 mod phase;
-mod wait;
 
 use std::{cell, error, marker, sync, sync::atomic, time};
 
@@ -84,8 +83,10 @@ use std::{cell, error, marker, sync, sync::atomic, time};
 pub enum Phase {
     /// The setup phase, where the data can be initialized and modified.
     Setup,
+
     /// The read phase, where the data is read-only.
     Read,
+
     /// The cleanup phase, where the data can be modified before being dropped.
     Cleanup,
 }
@@ -95,27 +96,44 @@ pub enum Phase {
 pub enum PhasedErrorKind {
     /// An error indicating that a mutex is poisoned.
     MutexIsPoisoned,
+
     /// An error indicating that a phase transition to the Read phase failed.
     TransitionToReadFailed,
+
     /// An error indicating that the phase is already in the Read phase.
     PhaseIsAlreadyRead,
+
     /// An error indicating that a transition to the Read phase is currently in progress.
     DuringTransitionToRead,
-    /// An error indicating that a phase transition to the Cleanup phase timed out.
-    TransitionToCleanupTimeout(WaitStrategy),
+
     /// An error indicating that a closure failed to run during a phase
     /// transition to the Read phase.
     FailToRunClosureDuringTransitionToRead,
-    /// An error indicating that a graceful phase transition is in progress.
-    GracefulPhaseTransitionIsInProgress,
+
+    /// An error indicating that a phase transition to the Cleanup phase failed.
+    TransitionToCleanupFailed,
+
+    /// An error indicating that a phase transition to the Cleanup phase timed out.
+    TransitionToCleanupTimeout(WaitStrategy),
+
+    /// An error indicating that the phase is already in the Cleanup phase.
+    PhaseIsAlreadyCleanup,
+
+    /// An error indicating that a transition to the Cleanup phase is currently in progress.
+    DuringTransitionToCleanup,
+
     /// An error indicating that the internal data is empty.
     InternalDataIsEmpty,
+
     /// An error indicating that a method cannot be called in the Setup phase.
     CannotCallInSetupPhase(String),
+
     /// An error indicating that a method cannot be called in the Read phase.
     CannotCallInReadPhase(String),
+
     /// An error indicating that a method cannot be called outside of the Read phase.
     CannotCallOutOfReadPhase(String),
+
     /// An error indicating that a method cannot be called on a Tokio runtime.
     CannotCallOnTokioRuntime(String),
 }
@@ -134,6 +152,7 @@ pub struct PhasedError {
 pub struct PhasedLock<T: Send + Sync> {
     phase: atomic::AtomicU8,
     read_count: atomic::AtomicUsize,
+    wait_cvar: sync::Condvar,
     data_mutex: sync::Mutex<Option<T>>,
     data_fixed: cell::UnsafeCell<Option<T>>,
     _marker: marker::PhantomData<T>,
@@ -153,10 +172,6 @@ pub enum WaitStrategy {
     FixedWait(time::Duration),
     /// A strategy that waits gracefully for a certain amount of time.
     GracefulWait {
-        /// The first wait time.
-        first: time::Duration,
-        /// The interval between subsequent waits.
-        interval: time::Duration,
         /// The timeout for the wait.
         timeout: time::Duration,
     },

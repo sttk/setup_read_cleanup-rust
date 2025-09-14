@@ -58,15 +58,13 @@ mod tests_of_phased_error {
         let e = PhasedError::new(
             Phase::Setup,
             PhasedErrorKind::TransitionToCleanupTimeout(WaitStrategy::GracefulWait {
-                first: time::Duration::from_secs(1),
-                interval: time::Duration::from_millis(10),
                 timeout: time::Duration::from_secs(5),
             }),
         );
 
         assert_eq!(
             format!("{e:?}"),
-            "setup_read_cleanup::PhasedError { phase: Setup, kind: TransitionToCleanupTimeout(GracefulWait { first: 1s, interval: 10ms, timeout: 5s }) }"
+            "setup_read_cleanup::PhasedError { phase: Setup, kind: TransitionToCleanupTimeout(GracefulWait { timeout: 5s }) }"
         );
     }
 }
