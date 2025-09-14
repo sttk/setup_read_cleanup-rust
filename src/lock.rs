@@ -2,11 +2,13 @@
 // This program is free software under MIT License.
 // See the file LICENSE in this distribution for more details.
 
-use crate::phase::{u8_to_phase, PHASE_CLEANUP, PHASE_READ, PHASE_SETUP, PHASE_SETUP_TO_READ};
+use crate::phase::{
+    u8_to_phase, PHASE_CLEANUP, PHASE_READ, PHASE_READ_TO_CLEANUP, PHASE_SETUP, PHASE_SETUP_TO_READ,
+};
 use crate::{Phase, PhasedError, PhasedErrorKind, PhasedLock, PhasedMutexGuard, WaitStrategy};
 
 use std::ops::{Deref, DerefMut};
-use std::{any, cell, error, marker, sync, sync::atomic};
+use std::{any, cell, error, marker, sync, sync::atomic, thread, time};
 
 macro_rules! cannot_call_on_tokio_runtime {
     ( $plock:ident, $method:literal ) => {
@@ -39,6 +41,7 @@ impl<T: Send + Sync> PhasedLock<T> {
         Self {
             phase: atomic::AtomicU8::new(PHASE_SETUP),
             read_count: atomic::AtomicUsize::new(0),
+            wait_cvar: sync::Condvar::new(),
             data_mutex: sync::Mutex::new(Some(data)),
             data_fixed: cell::UnsafeCell::new(None),
             _marker: marker::PhantomData,
@@ -115,7 +118,7 @@ impl<T: Send + Sync> PhasedLock<T> {
                         u8_to_phase(old_phase_cd),
                         PhasedErrorKind::MutexIsPoisoned,
                     ))
-                },
+                }
             },
             Err(old_phase_cd) => {
                 let kind = match old_phase_cd {
@@ -142,46 +145,160 @@ impl<T: Send + Sync> PhasedLock<T> {
     pub fn transition_to_cleanup(&self, wait_strategy: WaitStrategy) -> Result<(), PhasedError> {
         cannot_call_on_tokio_runtime!(self, "PhasedLock::transition_to_cleanup");
 
-        let _result = self.phase.fetch_update(
+        match wait_strategy {
+            WaitStrategy::NoWait => self.transition_to_cleanup_simply(),
+            WaitStrategy::FixedWait(tm) => {
+                thread::sleep(tm);
+                self.transition_to_cleanup_simply()
+            }
+            WaitStrategy::GracefulWait { timeout } => {
+                self.transition_to_cleanup_gracefully(timeout)
+            }
+        }
+    }
+
+    fn transition_to_cleanup_simply(&self) -> Result<(), PhasedError> {
+        match self.phase.fetch_update(
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
             |current_phase| match current_phase {
-                PHASE_SETUP | PHASE_READ => Some(PHASE_CLEANUP),
+                PHASE_SETUP => Some(PHASE_CLEANUP),
+                PHASE_READ => Some(PHASE_READ_TO_CLEANUP),
                 _ => None,
             },
-        );
+        ) {
+            Ok(PHASE_READ) => match self.data_mutex.lock() {
+                Ok(mut data_opt) => {
+                    if data_opt.is_none() {
+                        unsafe {
+                            core::ptr::swap(self.data_fixed.get(), &mut *data_opt);
+                        }
+                    }
 
-        // Even if it has already transitioned to the Cleanup phase, there are cases where the
-        // Graceful Wait has not been completed or the mem::swap from data_fixed to data_mutex
-        // has not been performed.
-        // Therefore, they have to be executed even if the phase has not been changed.
+                    let _result = self.phase.compare_exchange(
+                        PHASE_READ_TO_CLEANUP,
+                        PHASE_CLEANUP,
+                        atomic::Ordering::AcqRel,
+                        atomic::Ordering::Acquire,
+                    );
 
-        let wait_result = self.wait_with_strategy(wait_strategy);
+                    Ok(())
+                }
+                Err(_e) => {
+                    // rollback phase transition
+                    let _result = self.phase.compare_exchange(
+                        PHASE_READ_TO_CLEANUP,
+                        PHASE_READ,
+                        atomic::Ordering::AcqRel,
+                        atomic::Ordering::Acquire,
+                    );
 
+                    Err(PhasedError::new(
+                        u8_to_phase(PHASE_READ_TO_CLEANUP),
+                        PhasedErrorKind::MutexIsPoisoned,
+                    ))
+                }
+            },
+            Ok(_) => Ok(()), // PHASE_SETUP -> PHASE_CLEANUP
+            Err(PHASE_READ_TO_CLEANUP) => Err(PhasedError::new(
+                u8_to_phase(PHASE_READ_TO_CLEANUP),
+                PhasedErrorKind::DuringTransitionToCleanup,
+            )),
+            Err(PHASE_CLEANUP) => Err(PhasedError::new(
+                u8_to_phase(PHASE_CLEANUP),
+                PhasedErrorKind::PhaseIsAlreadyCleanup,
+            )),
+            Err(old_phase_cd) => Err(PhasedError::new(
+                u8_to_phase(old_phase_cd),
+                PhasedErrorKind::TransitionToCleanupFailed,
+            )),
+        }
+    }
+
+    fn transition_to_cleanup_gracefully(&self, timeout: time::Duration) -> Result<(), PhasedError> {
         match self.data_mutex.lock() {
             Ok(mut data_opt) => {
-                if data_opt.is_none() {
-                    unsafe {
-                        core::ptr::swap(self.data_fixed.get(), &mut *data_opt);
+                match self.phase.fetch_update(
+                    atomic::Ordering::AcqRel,
+                    atomic::Ordering::Acquire,
+                    |current_phase| match current_phase {
+                        PHASE_SETUP => Some(PHASE_CLEANUP),
+                        PHASE_READ => Some(PHASE_READ_TO_CLEANUP),
+                        _ => None,
+                    },
+                ) {
+                    Ok(PHASE_READ) => {
+                        let mut is_timeout = false;
+
+                        let start = time::Instant::now();
+                        while self.read_count.load(atomic::Ordering::Acquire) > 0 {
+                            let elapsed = start.elapsed();
+                            if elapsed >= timeout {
+                                is_timeout = true;
+                                break;
+                            }
+
+                            if let Ok(result) =
+                                self.wait_cvar.wait_timeout(data_opt, timeout - elapsed)
+                            {
+                                data_opt = result.0;
+
+                                if result.1.timed_out() {
+                                    is_timeout = true;
+                                    break;
+                                }
+                            } else {
+                                return Err(PhasedError::new(
+                                    u8_to_phase(PHASE_READ_TO_CLEANUP),
+                                    PhasedErrorKind::MutexIsPoisoned,
+                                ));
+                            }
+                        }
+
+                        if data_opt.is_none() {
+                            unsafe {
+                                core::ptr::swap(self.data_fixed.get(), &mut *data_opt);
+                            }
+                        }
+
+                        let _result = self.phase.compare_exchange(
+                            PHASE_READ_TO_CLEANUP,
+                            PHASE_CLEANUP,
+                            atomic::Ordering::AcqRel,
+                            atomic::Ordering::Acquire,
+                        );
+
+                        if is_timeout && self.read_count.load(atomic::Ordering::Acquire) > 0 {
+                            Err(PhasedError::new(
+                                u8_to_phase(PHASE_READ_TO_CLEANUP),
+                                PhasedErrorKind::TransitionToCleanupTimeout(
+                                    WaitStrategy::GracefulWait { timeout },
+                                ),
+                            ))
+                        } else {
+                            Ok(())
+                        }
                     }
+                    Ok(_) => Ok(()), // PHASE_SETUP -> PHASE_CLEANUP
+                    Err(PHASE_READ_TO_CLEANUP) => Err(PhasedError::new(
+                        u8_to_phase(PHASE_READ_TO_CLEANUP),
+                        PhasedErrorKind::DuringTransitionToCleanup,
+                    )),
+                    Err(PHASE_CLEANUP) => Err(PhasedError::new(
+                        u8_to_phase(PHASE_CLEANUP),
+                        PhasedErrorKind::PhaseIsAlreadyCleanup,
+                    )),
+                    Err(old_phase_cd) => Err(PhasedError::new(
+                        u8_to_phase(old_phase_cd),
+                        PhasedErrorKind::TransitionToCleanupFailed,
+                    )),
                 }
             }
-            Err(_e) => {
-                return Err(PhasedError::new(
-                    Phase::Cleanup,
-                    PhasedErrorKind::MutexIsPoisoned,
-                ));
-            }
+            Err(_e) => Err(PhasedError::new(
+                u8_to_phase(self.phase.load(atomic::Ordering::Acquire)),
+                PhasedErrorKind::MutexIsPoisoned,
+            )),
         }
-
-        if wait_result.is_err() {
-            return Err(PhasedError::new(
-                Phase::Cleanup,
-                PhasedErrorKind::TransitionToCleanupTimeout(wait_strategy),
-            ));
-        }
-
-        Ok(())
     }
 
     /// Returns the current phase of the `PhasedLock` without any memory ordering
@@ -226,7 +343,7 @@ impl<T: Send + Sync> PhasedLock<T> {
                 } else {
                     Err(PhasedError::new(
                         u8_to_phase(phase),
-                        PhasedErrorKind::GracefulPhaseTransitionIsInProgress,
+                        PhasedErrorKind::InternalDataIsEmpty,
                     ))
                 }
             }
@@ -320,7 +437,7 @@ impl<T: Send + Sync> PhasedLock<T> {
     /// This method returns an error if the current phase is Setup.
     pub fn finish_reading_gracefully(&self) -> Result<(), PhasedError> {
         let phase = self.phase.load(atomic::Ordering::Acquire);
-        if phase == PHASE_SETUP {
+        if phase == PHASE_SETUP || phase == PHASE_SETUP_TO_READ {
             return Err(PhasedError::new(
                 u8_to_phase(phase),
                 PhasedErrorKind::CannotCallInSetupPhase(
@@ -329,7 +446,7 @@ impl<T: Send + Sync> PhasedLock<T> {
             ));
         }
 
-        let result = self.read_count.fetch_update(
+        match self.read_count.fetch_update(
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
             |c| {
@@ -338,13 +455,24 @@ impl<T: Send + Sync> PhasedLock<T> {
                 }
                 Some(c - 1)
             },
-        );
-
-        if result.is_err() {
-            eprintln!(
-                "{}::finish_reading_gracefully is called excessively.",
-                any::type_name::<PhasedLock<T>>(),
-            );
+        ) {
+            Ok(1) => {
+                if let Ok(_g) = self.data_mutex.lock() {
+                    let phase = self.phase.load(atomic::Ordering::Acquire);
+                    if phase == PHASE_READ_TO_CLEANUP {
+                        self.wait_cvar.notify_one();
+                    }
+                } else {
+                    self.wait_cvar.notify_one(); // if the lock fails, just send it anyway.
+                }
+            }
+            Ok(_) => {}
+            Err(_) => {
+                eprintln!(
+                    "{}::finish_reading_gracefully is called excessively.",
+                    any::type_name::<PhasedLock<T>>(),
+                );
+            }
         }
 
         Ok(())
@@ -547,7 +675,7 @@ mod tests_of_phase_lock {
         }
 
         #[test]
-        fn ok_setup_read_read() {
+        fn fail_setup_read_read() {
             let my_struct: PhasedLock<MyStruct> = PhasedLock::new(MyStruct::new());
             assert_eq!(my_struct.phase_fast(), Phase::Setup);
 
@@ -557,10 +685,7 @@ mod tests_of_phase_lock {
             assert_eq!(my_struct.phase_fast(), Phase::Read);
 
             if let Err(e) = my_struct.transition_to_read(my_func) {
-                assert_eq!(
-                    format!("{e:?}"),
-                    "setup_read_cleanup::PhasedError { phase: Read, kind: PhaseIsAlreadyRead }"
-                );
+                assert_eq!(e.phase, Phase::Read);
                 assert_eq!(e.kind, PhasedErrorKind::PhaseIsAlreadyRead);
             } else {
                 panic!();
@@ -568,7 +693,7 @@ mod tests_of_phase_lock {
         }
 
         #[test]
-        fn ok_setup_cleanup_cleanup() {
+        fn fail_setup_cleanup_cleanup() {
             let my_struct: PhasedLock<MyStruct> = PhasedLock::new(MyStruct::new());
             assert_eq!(my_struct.phase_fast(), Phase::Setup);
 
@@ -578,40 +703,11 @@ mod tests_of_phase_lock {
             assert_eq!(my_struct.phase_fast(), Phase::Cleanup);
 
             if let Err(e) = my_struct.transition_to_cleanup(WaitStrategy::NoWait) {
-                panic!("{:?}", e);
-            }
-            assert_eq!(my_struct.phase_fast(), Phase::Cleanup);
-        }
-
-        #[test]
-        fn ok_setup_read_read_cleanup_cleanup() {
-            let my_struct: PhasedLock<MyStruct> = PhasedLock::new(MyStruct::new());
-            assert_eq!(my_struct.phase_fast(), Phase::Setup);
-
-            if let Err(e) = my_struct.transition_to_read(my_func) {
-                panic!("{:?}", e);
-            }
-            assert_eq!(my_struct.phase_fast(), Phase::Read);
-
-            if let Err(e) = my_struct.transition_to_read(my_func) {
-                assert_eq!(
-                    format!("{e:?}"),
-                    "setup_read_cleanup::PhasedError { phase: Read, kind: PhaseIsAlreadyRead }"
-                );
-                assert_eq!(e.kind, PhasedErrorKind::PhaseIsAlreadyRead);
+                assert_eq!(e.phase, Phase::Cleanup);
+                assert_eq!(e.kind, PhasedErrorKind::PhaseIsAlreadyCleanup);
             } else {
                 panic!();
             }
-
-            if let Err(e) = my_struct.transition_to_cleanup(WaitStrategy::NoWait) {
-                panic!("{:?}", e);
-            }
-            assert_eq!(my_struct.phase_fast(), Phase::Cleanup);
-
-            if let Err(e) = my_struct.transition_to_cleanup(WaitStrategy::NoWait) {
-                panic!("{:?}", e);
-            }
-            assert_eq!(my_struct.phase_fast(), Phase::Cleanup);
         }
 
         #[test]
@@ -625,10 +721,8 @@ mod tests_of_phase_lock {
             assert_eq!(my_struct.phase_fast(), Phase::Cleanup);
 
             if let Err(e) = my_struct.transition_to_read(my_func) {
-                assert_eq!(
-                    format!("{e:?}"),
-                    "setup_read_cleanup::PhasedError { phase: Cleanup, kind: TransitionToReadFailed }"
-                );
+                assert_eq!(e.phase, Phase::Cleanup);
+                assert_eq!(e.kind, PhasedErrorKind::TransitionToReadFailed);
             } else {
                 panic!();
             }
@@ -646,9 +740,12 @@ mod tests_of_phase_lock {
             assert_eq!(my_struct.phase_fast(), Phase::Setup);
 
             if let Err(e) = my_struct.transition_to_read(my_func) {
+                assert_eq!(e.phase, Phase::Setup);
                 assert_eq!(
-                    format!("{e:?}"),
-                    "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallOnTokioRuntime(\"PhasedLock::transition_to_read\") }"
+                    e.kind,
+                    PhasedErrorKind::CannotCallOnTokioRuntime(
+                        "PhasedLock::transition_to_read".to_string()
+                    )
                 );
             } else {
                 panic!();
@@ -669,12 +766,64 @@ mod tests_of_phase_lock {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
                 if let Err(e) = my_struct.transition_to_cleanup(WaitStrategy::NoWait) {
-                    assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Read, kind: CannotCallOnTokioRuntime(\"PhasedLock::transition_to_cleanup\") }");
+                    assert_eq!(e.phase, Phase::Read);
+                    assert_eq!(
+                        e.kind,
+                        PhasedErrorKind::CannotCallOnTokioRuntime(
+                            "PhasedLock::transition_to_cleanup".to_string()
+                        )
+                    );
                 } else {
                     panic!();
                 }
                 assert_eq!(my_struct.phase_fast(), Phase::Read);
             });
+        }
+
+        #[test]
+        fn fail_to_read_gracefully_during_cleanup_transition() {
+            let pl = sync::Arc::new(PhasedLock::new(MyStruct::new()));
+            pl.transition_to_read(my_func).unwrap();
+
+            let pl_slow_reader = sync::Arc::clone(&pl);
+            let slow_reader_handle = thread::spawn(move || {
+                let _data = pl_slow_reader.read_gracefully().unwrap();
+                thread::sleep(time::Duration::from_millis(1000));
+                pl_slow_reader.finish_reading_gracefully().unwrap();
+            });
+
+            // wait that the slow thread calls read_gracefully()
+            thread::sleep(time::Duration::from_millis(100));
+
+            let pl_writer = sync::Arc::clone(&pl);
+            let writer_handle = thread::spawn(move || {
+                pl_writer
+                    .transition_to_cleanup(WaitStrategy::GracefulWait {
+                        timeout: time::Duration::from_millis(2000),
+                    })
+                    .unwrap();
+            });
+
+            // wait that the writer thread starts transition to cleanup (PHASE_READ_TO_CLEANUP)
+            thread::sleep(time::Duration::from_millis(100));
+            assert_eq!(pl.phase_exact(), Phase::Cleanup);
+
+            match pl.read_gracefully() {
+                Err(e) => {
+                    assert_eq!(
+                        e.kind,
+                        PhasedErrorKind::CannotCallOutOfReadPhase(
+                            "PhasedLock::read_gracefully".to_string()
+                        )
+                    );
+                }
+                Ok(_) => panic!("Should not be able to read while transitioning to cleanup"),
+            }
+
+            slow_reader_handle.join().unwrap();
+            writer_handle.join().unwrap();
+
+            assert_eq!(pl.phase_exact(), Phase::Cleanup);
         }
 
         #[tokio::test]
@@ -683,9 +832,12 @@ mod tests_of_phase_lock {
             assert_eq!(my_struct.phase_fast(), Phase::Setup);
 
             if let Err(e) = my_struct.transition_to_cleanup(WaitStrategy::NoWait) {
+                assert_eq!(e.phase, Phase::Setup);
                 assert_eq!(
-                    format!("{e:?}"),
-                    "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallOnTokioRuntime(\"PhasedLock::transition_to_cleanup\") }"
+                    e.kind,
+                    PhasedErrorKind::CannotCallOnTokioRuntime(
+                        "PhasedLock::transition_to_cleanup".to_string()
+                    )
                 );
             } else {
                 panic!();
@@ -752,7 +904,11 @@ mod tests_of_phase_lock {
             let my_struct = PhasedLock::new(MyStruct::new());
 
             if let Err(e) = my_struct.read_fast() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallOutOfReadPhase(\"PhasedLock::read_fast\") }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallOutOfReadPhase("PhasedLock::read_fast".to_string())
+                );
             } else {
                 panic!();
             }
@@ -763,7 +919,13 @@ mod tests_of_phase_lock {
             let my_struct = PhasedLock::new(MyStruct::new());
 
             if let Err(e) = my_struct.read_gracefully() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallOutOfReadPhase(\"PhasedLock::read_gracefully\") }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallOutOfReadPhase(
+                        "PhasedLock::read_gracefully".to_string()
+                    )
+                );
             } else {
                 panic!();
             }
@@ -774,7 +936,13 @@ mod tests_of_phase_lock {
             let my_struct = PhasedLock::new(MyStruct::new());
 
             if let Err(e) = my_struct.finish_reading_gracefully() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallInSetupPhase(\"PhasedLock::finish_reading_gracefully\") }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallInSetupPhase(
+                        "PhasedLock::finish_reading_gracefully".to_string()
+                    )
+                );
             } else {
                 panic!();
             }
@@ -790,7 +958,13 @@ mod tests_of_phase_lock {
             let my_struct = PhasedLock::new(MyStruct::new());
 
             if let Err(e) = my_struct.lock_for_update() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallOnTokioRuntime(\"PhasedLock::lock_for_update\") }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallOnTokioRuntime(
+                        "PhasedLock::lock_for_update".to_string()
+                    )
+                );
             } else {
                 panic!();
             }
@@ -819,7 +993,11 @@ mod tests_of_phase_lock {
             let my_struct = PhasedLock::new(MyStruct::new());
 
             if let Err(e) = my_struct.read_fast() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallOutOfReadPhase(\"PhasedLock::read_fast\") }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallOutOfReadPhase("PhasedLock::read_fast".to_string())
+                );
             } else {
                 panic!();
             }
@@ -830,7 +1008,13 @@ mod tests_of_phase_lock {
             let my_struct = PhasedLock::new(MyStruct::new());
 
             if let Err(e) = my_struct.read_gracefully() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallOutOfReadPhase(\"PhasedLock::read_gracefully\") }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallOutOfReadPhase(
+                        "PhasedLock::read_gracefully".to_string()
+                    )
+                );
             } else {
                 panic!();
             }
@@ -841,7 +1025,13 @@ mod tests_of_phase_lock {
             let my_struct = PhasedLock::new(MyStruct::new());
 
             if let Err(e) = my_struct.finish_reading_gracefully() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallInSetupPhase(\"PhasedLock::finish_reading_gracefully\") }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallInSetupPhase(
+                        "PhasedLock::finish_reading_gracefully".to_string()
+                    )
+                );
             } else {
                 panic!();
             }
@@ -884,8 +1074,6 @@ mod tests_of_phase_lock {
             let start = time::Instant::now();
             my_struct
                 .transition_to_cleanup(WaitStrategy::GracefulWait {
-                    first: time::Duration::from_secs(0),
-                    interval: time::Duration::from_millis(100),
                     timeout: time::Duration::from_secs(2),
                 })
                 .unwrap();
@@ -924,13 +1112,10 @@ mod tests_of_phase_lock {
             let start = time::Instant::now();
             my_struct
                 .transition_to_cleanup(WaitStrategy::GracefulWait {
-                    first: time::Duration::from_secs(0),
-                    interval: time::Duration::from_millis(100),
                     timeout: time::Duration::from_secs(2),
                 })
                 .unwrap();
             assert!(start.elapsed() < time::Duration::from_millis(10));
-
             assert_eq!(my_struct.phase_fast(), Phase::Cleanup);
         }
 
@@ -947,7 +1132,13 @@ mod tests_of_phase_lock {
                     panic!();
                 }
                 Err(e) => {
-                    assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Read, kind: CannotCallInReadPhase(\"PhasedLock::lock_for_update\") }");
+                    assert_eq!(e.phase, Phase::Read);
+                    assert_eq!(
+                        e.kind,
+                        PhasedErrorKind::CannotCallInReadPhase(
+                            "PhasedLock::lock_for_update".to_string()
+                        )
+                    );
                 }
             }
 
@@ -1064,8 +1255,6 @@ mod tests_of_phase_lock {
             let start = time::Instant::now();
             my_struct
                 .transition_to_cleanup(WaitStrategy::GracefulWait {
-                    first: time::Duration::from_secs(0),
-                    interval: time::Duration::from_millis(100),
                     timeout: time::Duration::from_secs(2),
                 })
                 .unwrap();
@@ -1160,7 +1349,11 @@ mod tests_of_phase_lock {
             assert_eq!(my_struct.phase_fast(), Phase::Cleanup);
 
             if let Err(e) = my_struct.read_fast() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Cleanup, kind: CannotCallOutOfReadPhase(\"PhasedLock::read_fast\") }");
+                assert_eq!(e.phase, Phase::Cleanup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallOutOfReadPhase("PhasedLock::read_fast".to_string())
+                );
             } else {
                 panic!();
             }
@@ -1180,16 +1373,20 @@ mod tests_of_phase_lock {
             assert_eq!(my_struct.phase_fast(), Phase::Cleanup);
 
             if let Err(e) = my_struct.read_gracefully() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Cleanup, kind: CannotCallOutOfReadPhase(\"PhasedLock::read_gracefully\") }");
+                assert_eq!(e.phase, Phase::Cleanup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallOutOfReadPhase(
+                        "PhasedLock::read_gracefully".to_string()
+                    )
+                );
             } else {
                 panic!();
             }
         }
 
         #[test]
-        fn ok_finish_reading_gracefully() {
-            use std::time;
-
+        fn ok_finish_reading_gracefully_if_finished() {
             let my_struct = PhasedLock::new(MyStruct::new());
             assert_eq!(my_struct.phase_fast(), Phase::Setup);
 
@@ -1200,11 +1397,6 @@ mod tests_of_phase_lock {
                 panic!("{e:?}");
             }
 
-            my_struct
-                .transition_to_cleanup(WaitStrategy::NoWait)
-                .unwrap();
-            assert_eq!(my_struct.phase_fast(), Phase::Cleanup);
-
             if let Err(e) = my_struct.finish_reading_gracefully() {
                 panic!("{e:?}");
             }
@@ -1212,13 +1404,110 @@ mod tests_of_phase_lock {
             let start = time::Instant::now();
             my_struct
                 .transition_to_cleanup(WaitStrategy::GracefulWait {
-                    first: time::Duration::from_secs(0),
-                    interval: time::Duration::from_millis(100),
                     timeout: time::Duration::from_secs(2),
                 })
                 .unwrap();
             assert!(start.elapsed() < time::Duration::from_millis(10));
             assert_eq!(my_struct.phase_fast(), Phase::Cleanup);
+        }
+
+        #[test]
+        fn ok_finish_reading_gracefully_if_finish_before_timeout() {
+            let pl = sync::Arc::new(PhasedLock::new(MyStruct::new()));
+            assert_eq!(pl.phase_fast(), Phase::Setup);
+
+            if let Ok(mut data) = pl.lock_for_update() {
+                data.add("hello".to_string());
+            }
+
+            pl.transition_to_read(my_func).unwrap();
+            assert_eq!(pl.phase_fast(), Phase::Read);
+
+            let mut handler_vec = Vec::<thread::JoinHandle<()>>::new();
+
+            for _i in 0..10 {
+                let pl_clone = pl.clone();
+                let handler = thread::spawn(move || {
+                    let data = pl_clone.read_gracefully().unwrap();
+                    assert_eq!(data.vec[0], "hello");
+                    thread::sleep(time::Duration::from_secs(1));
+                    pl_clone.finish_reading_gracefully().unwrap();
+                });
+                handler_vec.push(handler);
+            }
+
+            // wait that all threads calls read_gracefully()
+            thread::sleep(time::Duration::from_millis(500));
+
+            let start = time::Instant::now();
+            if let Err(e) = pl.transition_to_cleanup(WaitStrategy::GracefulWait {
+                timeout: time::Duration::from_secs(2),
+            }) {
+                panic!("{e:?}");
+            }
+            let elapsed = start.elapsed();
+            assert!(
+                elapsed < time::Duration::from_secs(2),
+                "elapsed = {elapsed:?}"
+            );
+            assert_eq!(pl.phase_fast(), Phase::Cleanup);
+        }
+
+        #[test]
+        fn fail_finish_reading_gracefully_if_timeout() {
+            let my_struct = PhasedLock::new(MyStruct::new());
+            assert_eq!(my_struct.phase_fast(), Phase::Setup);
+
+            my_struct.transition_to_read(my_func).unwrap();
+            assert_eq!(my_struct.phase_fast(), Phase::Read);
+
+            if let Err(e) = my_struct.read_gracefully() {
+                panic!("{e:?}");
+            }
+
+            let ws = WaitStrategy::GracefulWait {
+                timeout: time::Duration::from_secs(2),
+            };
+
+            let start = time::Instant::now();
+            if let Err(e) = my_struct.transition_to_cleanup(ws) {
+                assert_eq!(e.phase, Phase::Cleanup);
+                assert_eq!(e.kind, PhasedErrorKind::TransitionToCleanupTimeout(ws));
+            } else {
+                panic!();
+            }
+            let elapsed = start.elapsed();
+            println!("elapsed = {:?}", elapsed);
+            #[cfg(target_os = "windows")]
+            assert!(
+                elapsed > time::Duration::from_millis(1980),
+                "elapsed = {elapsed:?}"
+            );
+            #[cfg(not(target_os = "windows"))]
+            assert!(
+                elapsed > time::Duration::from_secs(2),
+                "elapsed = {elapsed:?}"
+            );
+            assert!(
+                elapsed < time::Duration::from_millis(2200),
+                "elapsed = {elapsed:?}"
+            );
+            assert_eq!(my_struct.phase_fast(), Phase::Cleanup);
+        }
+
+        #[test]
+        fn ok_finish_reading_gracefully_if_called_excessively() {
+            let pl = PhasedLock::new(MyStruct::new());
+            pl.transition_to_read(my_func).unwrap();
+
+            let result = pl.finish_reading_gracefully(); // output a message to stderr
+            assert!(result.is_ok());
+
+            pl.read_gracefully().unwrap();
+            pl.finish_reading_gracefully().unwrap();
+
+            let result = pl.finish_reading_gracefully(); // output a message to stderr
+            assert!(result.is_ok());
         }
     }
 
@@ -1242,7 +1531,13 @@ mod tests_of_phase_lock {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
                 if let Err(e) = my_struct.lock_for_update() {
-                    assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Cleanup, kind: CannotCallOnTokioRuntime(\"PhasedLock::lock_for_update\") }");
+                    assert_eq!(e.phase, Phase::Cleanup);
+                    assert_eq!(
+                        e.kind,
+                        PhasedErrorKind::CannotCallOnTokioRuntime(
+                            "PhasedLock::lock_for_update".to_string()
+                        )
+                    );
                 } else {
                     panic!();
                 }
@@ -1299,10 +1594,15 @@ mod tests_of_phase_lock {
             assert_eq!(my_struct.phase_fast(), Phase::Setup);
 
             if let Err(e) = my_struct.transition_to_read(|data| data.set_flag(false)) {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: FailToRunClosureDuringTransitionToRead, source: MyError }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::FailToRunClosureDuringTransitionToRead
+                );
+                assert!(e.source.is_some());
                 match e.source {
                     Some(s) => {
-                        let _err: &MyError = &s.downcast::<MyError>().unwrap();
+                        let _err: &MyError = s.downcast_ref::<MyError>().unwrap();
                     }
                     None => panic!(),
                 }
@@ -1311,9 +1611,59 @@ mod tests_of_phase_lock {
             }
 
             if let Err(e) = my_struct.read_fast() {
-                assert_eq!(format!("{e:?}"), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallOutOfReadPhase(\"PhasedLock::read_fast\") }");
+                assert_eq!(e.phase, Phase::Setup);
+                assert_eq!(
+                    e.kind,
+                    PhasedErrorKind::CannotCallOutOfReadPhase("PhasedLock::read_fast".to_string())
+                );
             } else {
                 panic!();
+            }
+        }
+    }
+
+    mod test_of_mutex_poisoned {
+        use super::*;
+        use std::{panic, sync, thread};
+
+        #[test]
+        fn fail_when_mutex_is_poisoned() {
+            let pl = sync::Arc::new(PhasedLock::new(MyStruct::new()));
+
+            let pl_clone = sync::Arc::clone(&pl);
+            let handle = thread::spawn(move || {
+                let _lock = pl_clone.lock_for_update().unwrap();
+                panic!("Intentionally poisoning the mutex");
+            });
+
+            assert!(handle.join().is_err()); // wait for finishing a panic thread.
+
+            // All operations below should fail.
+
+            match pl.lock_for_update() {
+                Err(e) => {
+                    assert_eq!(e.phase, Phase::Setup);
+                    assert_eq!(e.kind, PhasedErrorKind::MutexIsPoisoned);
+                }
+                Ok(_) => panic!("Should have failed due to poisoned mutex"),
+            }
+
+            match pl.transition_to_read(|_| Ok::<(), MyError>(())) {
+                Err(e) => {
+                    assert_eq!(e.phase, Phase::Setup);
+                    assert_eq!(e.kind, PhasedErrorKind::MutexIsPoisoned);
+                }
+                Ok(_) => panic!("Should have failed due to poisoned mutex"),
+            }
+
+            match pl.transition_to_cleanup(WaitStrategy::GracefulWait {
+                timeout: time::Duration::from_secs(1),
+            }) {
+                Err(e) => {
+                    assert_eq!(e.phase, Phase::Setup);
+                    assert_eq!(e.kind, PhasedErrorKind::MutexIsPoisoned);
+                }
+                Ok(_) => panic!("Should have failed due to poisoned mutex"),
             }
         }
     }
