@@ -8,7 +8,7 @@ use crate::phase::{
 use crate::{Phase, PhasedError, PhasedErrorKind, PhasedLock, PhasedMutexGuard, WaitStrategy};
 
 use std::ops::{Deref, DerefMut};
-use std::{any, cell, error, marker, sync, sync::atomic, thread};
+use std::{any, cell, error, marker, sync, sync::atomic, thread, time};
 
 macro_rules! cannot_call_on_tokio_runtime {
     ( $plock:ident, $method:literal ) => {
@@ -164,11 +164,19 @@ impl<T: Send + Sync> PhasedLock<T> {
                                 thread::sleep(tm);
                             }
                             WaitStrategy::GracefulWait { timeout } => {
+                                let start = time::Instant::now();
                                 while self.read_count.load(atomic::Ordering::Acquire) > 0 {
+                                    let elapsed = start.elapsed();
+                                    if elapsed >= timeout {
+                                        is_timeout = true;
+                                        break;
+                                    }
+
                                     if let Ok(result) =
-                                        self.wait_cvar.wait_timeout(data_opt, timeout)
+                                        self.wait_cvar.wait_timeout(data_opt, timeout - elapsed)
                                     {
                                         data_opt = result.0;
+
                                         if result.1.timed_out() {
                                             is_timeout = true;
                                             break;
@@ -447,8 +455,8 @@ impl<'mutex, T> DerefMut for PhasedMutexGuard<'mutex, T> {
 mod tests_of_phase_lock {
     use super::*;
     use once_cell::sync::Lazy;
+    use std::fmt;
     use std::sync::Mutex;
-    use std::{fmt, time};
 
     struct MyStruct {
         vec: Vec<String>,
