@@ -90,14 +90,14 @@ impl<T: Send + Sync> PhasedLock<T> {
                         unsafe {
                             core::ptr::swap(self.data_fixed.get(), &mut *data_opt);
                         }
-
-                        let _result = self.phase.compare_exchange(
-                            PHASE_SETUP_TO_READ,
-                            PHASE_READ,
-                            atomic::Ordering::AcqRel,
-                            atomic::Ordering::Acquire,
-                        );
                     }
+
+                    let _result = self.phase.compare_exchange(
+                        PHASE_SETUP_TO_READ,
+                        PHASE_READ,
+                        atomic::Ordering::AcqRel,
+                        atomic::Ordering::Acquire,
+                    );
 
                     Ok(())
                 }
