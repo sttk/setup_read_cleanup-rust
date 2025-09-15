@@ -471,7 +471,7 @@ impl<T: Send + Sync> PhasedLock<T> {
             Err(_) => {
                 eprintln!(
                     "{}::finish_reading_gracefully is called excessively.",
-                    any::type_name::<PhasedLock<T>>()
+                    any::type_name::<PhasedLock<T>>(),
                 );
             }
         }
