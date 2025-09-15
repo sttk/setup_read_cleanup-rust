@@ -17,7 +17,7 @@ macro_rules! cannot_call_on_tokio_runtime {
             if tokio::runtime::Handle::try_current().is_ok() {
                 return Err(PhasedError::new(
                     u8_to_phase($plock.phase.load(std::sync::atomic::Ordering::Acquire)),
-                    PhasedErrorKind::CannotCallOnTokioRuntime(String::from($method)),
+                    PhasedErrorKind::CannotCallOnTokioRuntime(Self::method_name($method)),
                 ));
             }
         }
@@ -64,7 +64,7 @@ impl<T: Send + Sync> PhasedLock<T> {
         F: FnMut(&mut T) -> Result<(), E>,
         E: error::Error + Send + Sync + 'static,
     {
-        cannot_call_on_tokio_runtime!(self, "PhasedLock::transition_to_read");
+        cannot_call_on_tokio_runtime!(self, "transition_to_read");
 
         match self.phase.compare_exchange(
             PHASE_SETUP,
@@ -79,7 +79,7 @@ impl<T: Send + Sync> PhasedLock<T> {
                             // rollback phase transition
                             let _result = self.phase.compare_exchange(
                                 PHASE_SETUP_TO_READ,
-                                PHASE_SETUP,
+                                old_phase_cd,
                                 atomic::Ordering::AcqRel,
                                 atomic::Ordering::Acquire,
                             );
@@ -109,7 +109,7 @@ impl<T: Send + Sync> PhasedLock<T> {
                     // rollback phase transition
                     let _result = self.phase.compare_exchange(
                         PHASE_SETUP_TO_READ,
-                        PHASE_SETUP,
+                        old_phase_cd,
                         atomic::Ordering::AcqRel,
                         atomic::Ordering::Acquire,
                     );
@@ -120,15 +120,18 @@ impl<T: Send + Sync> PhasedLock<T> {
                     ))
                 }
             },
-            Err(old_phase_cd) => {
-                let kind = match old_phase_cd {
-                    PHASE_READ => PhasedErrorKind::PhaseIsAlreadyRead,
-                    PHASE_SETUP_TO_READ => PhasedErrorKind::DuringTransitionToRead,
-                    _ => PhasedErrorKind::TransitionToReadFailed,
-                };
-
-                Err(PhasedError::new(u8_to_phase(old_phase_cd), kind))
-            }
+            Err(PHASE_READ) => Err(PhasedError::new(
+                u8_to_phase(PHASE_READ),
+                PhasedErrorKind::PhaseIsAlreadyRead,
+            )),
+            Err(PHASE_SETUP_TO_READ) => Err(PhasedError::new(
+                u8_to_phase(PHASE_SETUP_TO_READ),
+                PhasedErrorKind::DuringTransitionToRead,
+            )),
+            Err(old_phase_cd) => Err(PhasedError::new(
+                u8_to_phase(old_phase_cd),
+                PhasedErrorKind::TransitionToReadFailed,
+            )),
         }
     }
 
@@ -143,7 +146,7 @@ impl<T: Send + Sync> PhasedLock<T> {
     /// - The mutex is poisoned.
     /// - The wait strategy times out.
     pub fn transition_to_cleanup(&self, wait_strategy: WaitStrategy) -> Result<(), PhasedError> {
-        cannot_call_on_tokio_runtime!(self, "PhasedLock::transition_to_cleanup");
+        cannot_call_on_tokio_runtime!(self, "transition_to_cleanup");
 
         match wait_strategy {
             WaitStrategy::NoWait => self.transition_to_cleanup_simply(),
@@ -326,13 +329,13 @@ impl<T: Send + Sync> PhasedLock<T> {
     /// - The mutex is poisoned.
     /// - A graceful phase transition is in progress.
     pub fn lock_for_update(&self) -> Result<PhasedMutexGuard<'_, T>, PhasedError> {
-        cannot_call_on_tokio_runtime!(self, "PhasedLock::lock_for_update");
+        cannot_call_on_tokio_runtime!(self, "lock_for_update");
 
         let phase = self.phase.load(atomic::Ordering::Acquire);
         if phase == PHASE_READ {
             return Err(PhasedError::new(
                 u8_to_phase(phase),
-                PhasedErrorKind::CannotCallInReadPhase("PhasedLock::lock_for_update".to_string()),
+                PhasedErrorKind::CannotCallInReadPhase(Self::method_name("lock_for_update")),
             ));
         }
 
@@ -368,7 +371,7 @@ impl<T: Send + Sync> PhasedLock<T> {
         if phase != PHASE_READ {
             return Err(PhasedError::new(
                 u8_to_phase(phase),
-                PhasedErrorKind::CannotCallOutOfReadPhase("PhasedLock::read_fast".to_string()),
+                PhasedErrorKind::CannotCallOutOfReadPhase(Self::method_name("read_fast")),
             ));
         }
 
@@ -410,9 +413,7 @@ impl<T: Send + Sync> PhasedLock<T> {
             let phase = self.phase.load(atomic::Ordering::Acquire);
             return Err(PhasedError::new(
                 u8_to_phase(phase),
-                PhasedErrorKind::CannotCallOutOfReadPhase(
-                    "PhasedLock::read_gracefully".to_string(),
-                ),
+                PhasedErrorKind::CannotCallOutOfReadPhase(Self::method_name("read_gracefully")),
             ));
         }
 
@@ -440,9 +441,9 @@ impl<T: Send + Sync> PhasedLock<T> {
         if phase == PHASE_SETUP || phase == PHASE_SETUP_TO_READ {
             return Err(PhasedError::new(
                 u8_to_phase(phase),
-                PhasedErrorKind::CannotCallInSetupPhase(
-                    "PhasedLock::finish_reading_gracefully".to_string(),
-                ),
+                PhasedErrorKind::CannotCallInSetupPhase(Self::method_name(
+                    "finish_reading_gracefully",
+                )),
             ));
         }
 
@@ -476,6 +477,11 @@ impl<T: Send + Sync> PhasedLock<T> {
         }
 
         Ok(())
+    }
+
+    #[inline]
+    fn method_name(m: &str) -> String {
+        format!("{}::{}", any::type_name::<PhasedLock<T>>(), m)
     }
 }
 
@@ -744,7 +750,7 @@ mod tests_of_phase_lock {
                 assert_eq!(
                     e.kind,
                     PhasedErrorKind::CannotCallOnTokioRuntime(
-                        "PhasedLock::transition_to_read".to_string()
+                        "setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::transition_to_read".to_string()
                     )
                 );
             } else {
@@ -770,7 +776,7 @@ mod tests_of_phase_lock {
                     assert_eq!(
                         e.kind,
                         PhasedErrorKind::CannotCallOnTokioRuntime(
-                            "PhasedLock::transition_to_cleanup".to_string()
+                            "setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::transition_to_cleanup".to_string()
                         )
                     );
                 } else {
@@ -813,7 +819,7 @@ mod tests_of_phase_lock {
                     assert_eq!(
                         e.kind,
                         PhasedErrorKind::CannotCallOutOfReadPhase(
-                            "PhasedLock::read_gracefully".to_string()
+                            "setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::read_gracefully".to_string()
                         )
                     );
                 }
@@ -836,7 +842,7 @@ mod tests_of_phase_lock {
                 assert_eq!(
                     e.kind,
                     PhasedErrorKind::CannotCallOnTokioRuntime(
-                        "PhasedLock::transition_to_cleanup".to_string()
+                        "setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::transition_to_cleanup".to_string()
                     )
                 );
             } else {
@@ -907,7 +913,7 @@ mod tests_of_phase_lock {
                 assert_eq!(e.phase, Phase::Setup);
                 assert_eq!(
                     e.kind,
-                    PhasedErrorKind::CannotCallOutOfReadPhase("PhasedLock::read_fast".to_string())
+                    PhasedErrorKind::CannotCallOutOfReadPhase("setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::read_fast".to_string())
                 );
             } else {
                 panic!();
@@ -923,7 +929,7 @@ mod tests_of_phase_lock {
                 assert_eq!(
                     e.kind,
                     PhasedErrorKind::CannotCallOutOfReadPhase(
-                        "PhasedLock::read_gracefully".to_string()
+                        "setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::read_gracefully".to_string()
                     )
                 );
             } else {
@@ -940,7 +946,7 @@ mod tests_of_phase_lock {
                 assert_eq!(
                     e.kind,
                     PhasedErrorKind::CannotCallInSetupPhase(
-                        "PhasedLock::finish_reading_gracefully".to_string()
+                        "setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::finish_reading_gracefully".to_string()
                     )
                 );
             } else {
@@ -962,7 +968,7 @@ mod tests_of_phase_lock {
                 assert_eq!(
                     e.kind,
                     PhasedErrorKind::CannotCallOnTokioRuntime(
-                        "PhasedLock::lock_for_update".to_string()
+                        "setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::lock_for_update".to_string()
                     )
                 );
             } else {
@@ -996,7 +1002,7 @@ mod tests_of_phase_lock {
                 assert_eq!(e.phase, Phase::Setup);
                 assert_eq!(
                     e.kind,
-                    PhasedErrorKind::CannotCallOutOfReadPhase("PhasedLock::read_fast".to_string())
+                    PhasedErrorKind::CannotCallOutOfReadPhase("setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::read_fast".to_string())
                 );
             } else {
                 panic!();
@@ -1012,7 +1018,7 @@ mod tests_of_phase_lock {
                 assert_eq!(
                     e.kind,
                     PhasedErrorKind::CannotCallOutOfReadPhase(
-                        "PhasedLock::read_gracefully".to_string()
+                        "setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::read_gracefully".to_string()
                     )
                 );
             } else {
@@ -1029,7 +1035,7 @@ mod tests_of_phase_lock {
                 assert_eq!(
                     e.kind,
                     PhasedErrorKind::CannotCallInSetupPhase(
-                        "PhasedLock::finish_reading_gracefully".to_string()
+                        "setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::finish_reading_gracefully".to_string()
                     )
                 );
             } else {
@@ -1136,7 +1142,7 @@ mod tests_of_phase_lock {
                     assert_eq!(
                         e.kind,
                         PhasedErrorKind::CannotCallInReadPhase(
-                            "PhasedLock::lock_for_update".to_string()
+                            "setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::lock_for_update".to_string()
                         )
                     );
                 }
@@ -1352,7 +1358,7 @@ mod tests_of_phase_lock {
                 assert_eq!(e.phase, Phase::Cleanup);
                 assert_eq!(
                     e.kind,
-                    PhasedErrorKind::CannotCallOutOfReadPhase("PhasedLock::read_fast".to_string())
+                    PhasedErrorKind::CannotCallOutOfReadPhase("setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::read_fast".to_string())
                 );
             } else {
                 panic!();
@@ -1377,7 +1383,7 @@ mod tests_of_phase_lock {
                 assert_eq!(
                     e.kind,
                     PhasedErrorKind::CannotCallOutOfReadPhase(
-                        "PhasedLock::read_gracefully".to_string()
+                        "setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::read_gracefully".to_string()
                     )
                 );
             } else {
@@ -1535,7 +1541,7 @@ mod tests_of_phase_lock {
                     assert_eq!(
                         e.kind,
                         PhasedErrorKind::CannotCallOnTokioRuntime(
-                            "PhasedLock::lock_for_update".to_string()
+                            "setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::MyStruct>::lock_for_update".to_string()
                         )
                     );
                 } else {
@@ -1614,7 +1620,7 @@ mod tests_of_phase_lock {
                 assert_eq!(e.phase, Phase::Setup);
                 assert_eq!(
                     e.kind,
-                    PhasedErrorKind::CannotCallOutOfReadPhase("PhasedLock::read_fast".to_string())
+                    PhasedErrorKind::CannotCallOutOfReadPhase("setup_read_cleanup::PhasedLock<setup_read_cleanup::lock::tests_of_phase_lock::tests_of_running_closure_during_transition_to_read::MyStruct>::read_fast".to_string())
                 );
             } else {
                 panic!();
