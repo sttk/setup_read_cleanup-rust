@@ -152,8 +152,10 @@ pub struct PhasedError {
 pub struct PhasedLock<T: Send + Sync> {
     phase: atomic::AtomicU8,
     read_count: atomic::AtomicUsize,
+
     wait_cvar: sync::Condvar,
     data_mutex: sync::Mutex<Option<T>>,
+
     data_fixed: cell::UnsafeCell<Option<T>>,
     _marker: marker::PhantomData<T>,
 }
