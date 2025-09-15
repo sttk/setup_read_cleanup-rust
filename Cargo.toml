@@ -13,7 +13,7 @@ keywords = ["shared-resource", "thread-safe", "static-safe", "phase-transition",
 categories = ["concurrency", "asynchronous", "rust-patterns"]
 
 [dependencies]
-tokio = { version = "1.29", features = ["rt-multi-thread", "macros"], optional = true }
+tokio = { version = "1.29", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
 
 [features]
 default = []

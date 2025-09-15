@@ -76,6 +76,9 @@ mod errors;
 mod lock;
 mod phase;
 
+#[cfg(feature = "setup_read_cleanup-on-tokio-rt")]
+pub mod tokio;
+
 use std::{cell, error, marker, sync, sync::atomic, time};
 
 /// An enum representing the current phase of a `PhasedLock`.
