@@ -134,8 +134,6 @@ use std::time::Duration;
 // Transition to the Cleanup phase. This call will block until all readers are finished,
 // with a maximum wait time of 10 seconds.
 PHASED_LOCK.transition_to_cleanup(WaitStrategy::GracefulWait {
-    first: Duration::from_millis(100),
-    interval: Duration::from_millis(50),
     timeout: Duration::from_secs(10),
 }).unwrap();
 ```
