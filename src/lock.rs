@@ -12,7 +12,7 @@ use std::{any, cell, error, marker, sync, sync::atomic, thread, time};
 
 macro_rules! cannot_call_on_tokio_runtime {
     ( $plock:ident, $method:literal ) => {
-        #[cfg(feature = "setup_read_cleanup-on-tokio-rt")]
+        #[cfg(feature = "setup_read_cleanup-on-tokio")]
         {
             if tokio::runtime::Handle::try_current().is_ok() {
                 return Err(PhasedError::new(
@@ -622,7 +622,7 @@ mod tests_of_phase_lock {
         }
     }
 
-    #[cfg(feature = "setup_read_cleanup-on-tokio-rt")]
+    #[cfg(feature = "setup_read_cleanup-on-tokio")]
     mod tests_of_new_on_tokio_rt {
         use super::*;
 
@@ -736,7 +736,7 @@ mod tests_of_phase_lock {
         }
     }
 
-    #[cfg(feature = "setup_read_cleanup-on-tokio-rt")]
+    #[cfg(feature = "setup_read_cleanup-on-tokio")]
     mod tests_of_phase_transition_on_tokio_rt {
         use super::*;
 
@@ -955,7 +955,7 @@ mod tests_of_phase_lock {
         }
     }
 
-    #[cfg(feature = "setup_read_cleanup-on-tokio-rt")]
+    #[cfg(feature = "setup_read_cleanup-on-tokio")]
     mod tests_in_setup_phase_on_tokio_rt {
         use super::*;
 
@@ -1156,7 +1156,7 @@ mod tests_of_phase_lock {
         }
     }
 
-    #[cfg(feature = "setup_read_cleanup-on-tokio-rt")]
+    #[cfg(feature = "setup_read_cleanup-on-tokio")]
     mod tests_in_read_phase_on_tokio_rt {
         use super::*;
 
@@ -1517,7 +1517,7 @@ mod tests_of_phase_lock {
         }
     }
 
-    #[cfg(feature = "setup_read_cleanup-on-tokio-rt")]
+    #[cfg(feature = "setup_read_cleanup-on-tokio")]
     mod tests_in_cleanup_phase_on_tokio_rt {
         use super::*;
 
