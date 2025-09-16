@@ -16,13 +16,11 @@ categories = ["concurrency", "asynchronous", "rust-patterns"]
 tokio = { version = "1.29", features = ["rt-multi-thread", "macros"], optional = true }
 
 [features]
+setup_read_cleanup-on-tokio = ["tokio"]
+
 default = []
 
-setup_read_cleanup-on-tokio-rt = ["tokio"]
-
-full = [
-  "setup_read_cleanup-on-tokio-rt"
-]
+full = ["setup_read_cleanup-on-tokio"]
 
 [dev-dependencies]
 once_cell = "=1.20.3"
