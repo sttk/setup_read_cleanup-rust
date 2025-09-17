@@ -76,7 +76,7 @@ mod errors;
 mod lock;
 mod phase;
 
-use std::{cell, error, marker, sync, sync::atomic, time};
+use std::{cell, error, marker, sync::atomic, time};
 
 /// An enum representing the current phase of a `PhasedLock`.
 #[derive(Debug, PartialEq, Eq)]
@@ -153,16 +153,29 @@ pub struct PhasedLock<T: Send + Sync> {
     phase: atomic::AtomicU8,
     read_count: atomic::AtomicUsize,
 
-    wait_cvar: sync::Condvar,
-    data_mutex: sync::Mutex<Option<T>>,
+    #[cfg(feature = "setup_read_cleanup-on-std")]
+    wait_std_cvar: std::sync::Condvar,
+    #[cfg(feature = "setup_read_cleanup-on-std")]
+    data_std_mutex: std::sync::Mutex<Option<T>>,
+
+    #[cfg(feature = "setup_read_cleanup-on-tokio")]
+    wait_tokio_notify: tokio::sync::Notify,
+    #[cfg(feature = "setup_read_cleanup-on-tokio")]
+    data_tokio_mutex: tokio::sync::Mutex<Option<T>>,
 
     data_fixed: cell::UnsafeCell<Option<T>>,
     _marker: marker::PhantomData<T>,
 }
 
 /// A mutex guard for a `PhasedLock` in Setup and Cleanup phase.
-pub struct PhasedMutexGuard<'mutex, T> {
-    inner: sync::MutexGuard<'mutex, Option<T>>,
+#[cfg(feature = "setup_read_cleanup-on-std")]
+pub struct PhasedStdMutexGuard<'mutex, T> {
+    inner: std::sync::MutexGuard<'mutex, Option<T>>,
+}
+
+#[cfg(feature = "setup_read_cleanup-on-tokio")]
+pub struct PhasedTokioMutexGuard<'mutex, T> {
+    inner: tokio::sync::MutexGuard<'mutex, Option<T>>,
 }
 
 /// An enum representing the waiting strategy for a phase transition.
