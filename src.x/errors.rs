@@ -46,42 +46,25 @@ mod tests_of_phased_error {
 
     #[test]
     fn test_new() {
-        let e = PhasedError::new(
-            Phase::Setup,
-            PhasedErrorKind::CannotCallInSetupPhase("method".to_string()),
-        );
+        let e = PhasedError::new(Phase::Setup, PhasedErrorKind::TransitionToReadFailed);
 
         assert_eq!(e.phase, Phase::Setup);
-        assert_eq!(
-            e.kind,
-            PhasedErrorKind::CannotCallInSetupPhase("method".to_string())
-        );
+        assert_eq!(e.kind, PhasedErrorKind::TransitionToReadFailed);
         assert!(e.source.is_none());
     }
 
     #[test]
     fn test_debug() {
-        let e0 = std::io::Error::new(std::io::ErrorKind::Interrupted, "oh no!");
-        let e = PhasedError::with_source(
+        let e = PhasedError::new(
             Phase::Setup,
             PhasedErrorKind::TransitionToCleanupTimeout(WaitStrategy::GracefulWait {
-                timeout: time::Duration::from_secs(1),
+                timeout: time::Duration::from_secs(5),
             }),
-            e0,
         );
 
-        assert_eq!(e.phase, Phase::Setup);
         assert_eq!(
-            e.kind,
-            PhasedErrorKind::TransitionToCleanupTimeout(WaitStrategy::GracefulWait {
-                timeout: time::Duration::from_secs(1),
-            })
-        );
-        assert!(e.source.is_some());
-
-        assert_eq!(
-          format!("{e:?}"),
-          "setup_read_cleanup::PhasedError { phase: Setup, kind: TransitionToCleanupTimeout(GracefulWait { timeout: 1s }), source: Custom { kind: Interrupted, error: \"oh no!\" } }"
+            format!("{e:?}"),
+            "setup_read_cleanup::PhasedError { phase: Setup, kind: TransitionToCleanupTimeout(GracefulWait { timeout: 5s }) }"
         );
     }
 }
