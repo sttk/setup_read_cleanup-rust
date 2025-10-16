@@ -5,8 +5,13 @@
 mod errors;
 mod phase;
 mod phased_cell;
+mod phased_cell_sync;
+mod wait;
 
-use std::{cell, error, marker, sync, sync::atomic, time};
+#[cfg(feature = "setup_read_cleanup-on-tokio")]
+mod phased_cell_async;
+
+use std::{cell, error, marker, sync::atomic, time};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -17,46 +22,63 @@ pub enum Phase {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PhasedErrorKind {
-    MutexIsPoisoned,
-    TransitionToReadFailed,
+    CannotCallUnlessPhaseSetup(String),
+    CannotCallUnlessPhaseRead(String),
+    CannotCallUnlessPhaseCleanup(String),
+    CannotCallOnPhaseSetup(String),
+    InternalDataUnavailable,
     PhaseIsAlreadyRead,
-    DuringTransitionToRead,
-    FailToRunClosureDuringTransitionToRead,
-    TransitionToCleanupFailed,
-    TransitionToCleanupTimeout(WaitStrategy),
     PhaseIsAlreadyCleanup,
+    DuringTransitionToRead,
     DuringTransitionToCleanup,
-    InternalDataIsEmpty,
-    CannotCallInSetupPhase(String),
-    CannotCallInReadPhase(String),
-    CannotCallOutOfReadPhase(String),
-    CannotCallOnTokioRuntime(String),
+    TransitionToReadFailed,
+    TransitionToCleanupFailed,
+    TransitionToCleanupTimeout(Wait),
+    FailToRunClosureDuringTransitionToRead,
 }
 
 pub struct PhasedError {
     pub phase: Phase,
     pub kind: PhasedErrorKind,
-    pub source: Option<Box<dyn error::Error + Send + Sync>>,
+    source: Option<Box<dyn error::Error + Send + Sync>>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Wait {
+    Zero,
+    Fixed(time::Duration),
+    Graceful { timeout: time::Duration },
 }
 
 pub struct PhasedCell<T: Send + Sync> {
     phase: atomic::AtomicU8,
     read_count: atomic::AtomicUsize,
+    data_cell: cell::UnsafeCell<T>,
+    _marker: marker::PhantomData<T>,
+}
 
-    wait_cvar: sync::Condvar,
-    data_mutex: sync::Mutex<Option<T>>,
+pub struct PhasedCellSync<T: Send + Sync> {
+    phase: atomic::AtomicU8,
+    read_count: atomic::AtomicUsize,
+    data_mutex: std::sync::Mutex<Option<T>>,
+    data_cell: cell::UnsafeCell<Option<T>>,
+    _marker: marker::PhantomData<T>,
+}
 
-    data_fixed: cell::UnsafeCell<Option<T>>,
+#[cfg(feature = "setup_read_cleanup-on-tokio")]
+pub struct PhasedCellAsync<T: Send + Sync> {
+    phase: atomic::AtomicU8,
+    read_count: atomic::AtomicUsize,
+    data_mutex: tokio::sync::Mutex<Option<T>>,
+    data_cell: cell::UnsafeCell<Option<T>>,
     _marker: marker::PhantomData<T>,
 }
 
 pub struct PhasedMutexGuard<'mutex, T> {
-    inner: sync::MutexGuard<'mutex, Option<T>>,
+    inner: std::sync::MutexGuard<'mutex, Option<T>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WaitStrategy {
-    NoWait,
-    FixedWait(time::Duration),
-    GracefulWait { timeout: time::Duration },
+#[cfg(feature = "setup_read_cleanup-on-tokio")]
+pub struct PhasedMutexGuardAsync<'mutex, T> {
+    inner: tokio::sync::MutexGuard<'mutex, Option<T>>,
 }
