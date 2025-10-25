@@ -57,7 +57,7 @@ doc() {
 }
 
 msrv() {
-  cargo msrv find --ignore-lockfile --no-check-feedback
+  cargo msrv find --all-features --ignore-lockfile --no-check-feedback
   errcheck $?
 }
 
