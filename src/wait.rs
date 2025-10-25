@@ -83,7 +83,7 @@ async fn pause_async(counter: &atomic::AtomicUsize, wait: Wait) -> Result<(), Wa
                 if counter.load(atomic::Ordering::Acquire) == 0 {
                     return Ok(());
                 }
-                r = r * 2.0;
+                r *= 2.0;
                 elapsed = start.elapsed();
             }
             Err(wait)

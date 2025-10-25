@@ -878,7 +878,7 @@ mod tests_of_phased_cell_async {
                 println!("{}. {}", i, data.vec.as_slice().join(", "));
             });
         }
-        let _ = tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
         // Read -> Cleanup
         if let Err(e) = cell
@@ -1108,7 +1108,7 @@ mod tests_of_phased_cell_async {
         });
         join_handlers.push(handler);
 
-        let _ = tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         if let Err(e) = cell.lock_async().await {
             assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
@@ -1150,7 +1150,7 @@ mod tests_of_phased_cell_async {
         });
         join_handlers.push(handler);
 
-        let _ = tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         if let Err(e) = cell.lock_async().await {
             assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
@@ -1172,8 +1172,10 @@ mod tests_of_phased_cell_async {
 
         if let Err(e) = cell
             .transition_to_read_async(|_data| {
-                let _ = tokio::time::sleep(std::time::Duration::from_secs(1));
-                Box::pin(async { Err(MyError {}) })
+                Box::pin(async {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    Err(MyError {})
+                })
             })
             .await
         {
@@ -1203,8 +1205,10 @@ mod tests_of_phased_cell_async {
             let handler = tokio::task::spawn(async move {
                 if let Err(e) = cell_clone
                     .transition_to_read_async(|_data| {
-                        let _ = tokio::time::sleep(std::time::Duration::from_secs(1));
-                        Box::pin(async { Ok::<(), MyError>(()) })
+                        Box::pin(async {
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            Ok::<(), MyError>(())
+                        })
                     })
                     .await
                 {
@@ -1280,7 +1284,7 @@ mod tests_of_phased_cell_async {
             if let Err(e) = cell_clone
                 .transition_to_read_async(|_data| {
                     Box::pin(async {
-                        let _ = tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                         Ok::<(), MyError>(())
                     })
                 })
@@ -1291,7 +1295,7 @@ mod tests_of_phased_cell_async {
         });
         join_handlers.push(handler);
 
-        let _ = tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let cell_clone = Arc::clone(&cell);
         let handler = tokio::task::spawn(async move {
@@ -1376,7 +1380,7 @@ mod tests_of_phased_cell_async {
         });
         join_handlers.push(handler);
 
-        let _ = tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let cell_clone = Arc::clone(&cell);
         let handler = tokio::task::spawn(async move {
