@@ -876,7 +876,7 @@ mod tests_of_phased_cell_async {
             let _handler = tokio::task::spawn(async move {
                 let data = cell_clone.read_gracefully().unwrap();
                 assert_eq!(data.vec.as_slice().join(", "), "Hello, World");
-                let _ = tokio::time::sleep(std::time::Duration::from_secs(i + 1)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(i + 1)).await;
                 counter_clone.fetch_add(1, atomic::Ordering::Release);
                 cell_clone.finish_reading_gracefully().unwrap();
                 println!("{}. {}", i, data.vec.as_slice().join(", "));
