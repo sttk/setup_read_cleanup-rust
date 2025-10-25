@@ -125,17 +125,21 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
             ));
         }
 
-        if let Err(_) = self.read_count.fetch_update(
-            atomic::Ordering::AcqRel,
-            atomic::Ordering::Acquire,
-            |count| {
-                if count == 0 {
-                    None
-                } else {
-                    Some(count - 1)
-                }
-            },
-        ) {
+        if self
+            .read_count
+            .fetch_update(
+                atomic::Ordering::AcqRel,
+                atomic::Ordering::Acquire,
+                |count| {
+                    if count == 0 {
+                        None
+                    } else {
+                        Some(count - 1)
+                    }
+                },
+            )
+            .is_err()
+        {
             eprintln!(
                 "{} is called excessively.",
                 Self::method_name("finish_reading_gracefully"),
