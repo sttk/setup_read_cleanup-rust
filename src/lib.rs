@@ -52,7 +52,6 @@ pub enum Wait {
 
 pub struct PhasedCell<T: Send + Sync> {
     phase: atomic::AtomicU8,
-    read_count: atomic::AtomicUsize,
     data_cell: cell::UnsafeCell<T>,
     _marker: marker::PhantomData<T>,
 }
