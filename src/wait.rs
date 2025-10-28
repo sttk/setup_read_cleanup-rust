@@ -2,18 +2,12 @@
 // This program is free software under MIT License.
 // See the file LICENSE in this distribution for more details.
 
-use crate::{PhasedCell, PhasedCellSync, Wait};
+use crate::{PhasedCellSync, Wait};
 
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 use crate::PhasedCellAsync;
 
 use std::sync::atomic;
-
-impl<T: Send + Sync> PhasedCell<T> {
-    pub(crate) fn pause(&self, wait: Wait) -> Result<(), Wait> {
-        pause(&self.read_count, wait)
-    }
-}
 
 impl<T: Send + Sync> PhasedCellSync<T> {
     pub(crate) fn pause(&self, wait: Wait) -> Result<(), Wait> {
@@ -97,7 +91,7 @@ mod tests_of_pause {
 
     #[test]
     fn zero_wait() {
-        let pc = PhasedCell::<bool>::new(true);
+        let pc = PhasedCellSync::<bool>::new(true);
         let st = std::time::Instant::now();
         let r = pc.pause(Wait::Zero);
         let d = st.elapsed();
@@ -107,7 +101,7 @@ mod tests_of_pause {
 
     #[test]
     fn fixed_wait() {
-        let pc = PhasedCell::<bool>::new(true);
+        let pc = PhasedCellSync::<bool>::new(true);
         let st = std::time::Instant::now();
         let r = pc.pause(Wait::Fixed(std::time::Duration::from_millis(50)));
         let d = st.elapsed();
@@ -122,7 +116,7 @@ mod tests_of_pause {
 
     #[test]
     fn graceful_wait_if_read_count_is_zero() {
-        let pc = PhasedCell::<bool>::new(true);
+        let pc = PhasedCellSync::<bool>::new(true);
         let st = std::time::Instant::now();
         let r = pc.pause(Wait::Graceful {
             timeout: std::time::Duration::from_secs(1),
@@ -134,7 +128,7 @@ mod tests_of_pause {
 
     #[test]
     fn graceful_wait_if_timeout_is_zero() {
-        let pc = PhasedCell::<bool>::new(true);
+        let pc = PhasedCellSync::<bool>::new(true);
         pc.read_count.fetch_add(1, atomic::Ordering::Release);
         let st = std::time::Instant::now();
         let r = pc.pause(Wait::Graceful {
@@ -153,7 +147,7 @@ mod tests_of_pause {
 
     #[test]
     fn graceful_wait_if_read_count_is_zero_and_timeout_is_zero() {
-        let pc = PhasedCell::<bool>::new(true);
+        let pc = PhasedCellSync::<bool>::new(true);
         let st = std::time::Instant::now();
         let r = pc.pause(Wait::Graceful {
             timeout: std::time::Duration::from_secs(0),
@@ -166,7 +160,7 @@ mod tests_of_pause {
 
     #[test]
     fn graceful_wait_if_read_count_becomes_zero_after_1st_sleep() {
-        let pc = PhasedCell::<bool>::new(true);
+        let pc = PhasedCellSync::<bool>::new(true);
         pc.read_count.fetch_add(1, atomic::Ordering::Release);
 
         let pc_1 = std::sync::Arc::new(pc);
@@ -193,7 +187,7 @@ mod tests_of_pause {
 
     #[test]
     fn graceful_wait_if_read_count_becomes_zero_after_2nd_sleep() {
-        let pc = PhasedCell::<bool>::new(true);
+        let pc = PhasedCellSync::<bool>::new(true);
         pc.read_count.fetch_add(1, atomic::Ordering::Release);
 
         let pc_1 = std::sync::Arc::new(pc);
@@ -220,7 +214,7 @@ mod tests_of_pause {
 
     #[test]
     fn graceful_wait_if_read_count_becomes_zero_after_3rd_sleep() {
-        let pc = PhasedCell::<bool>::new(true);
+        let pc = PhasedCellSync::<bool>::new(true);
         pc.read_count.fetch_add(1, atomic::Ordering::Release);
 
         let pc_1 = std::sync::Arc::new(pc);
@@ -247,7 +241,7 @@ mod tests_of_pause {
 
     #[test]
     fn graceful_wait_if_read_count_becomes_zero_after_8th_sleep() {
-        let pc = PhasedCell::<bool>::new(true);
+        let pc = PhasedCellSync::<bool>::new(true);
         pc.read_count.fetch_add(1, atomic::Ordering::Release);
 
         let pc_1 = std::sync::Arc::new(pc);
@@ -274,7 +268,7 @@ mod tests_of_pause {
 
     #[test]
     fn graceful_wait_if_read_count_becomes_zero_after_9th_sleep() {
-        let pc = PhasedCell::<bool>::new(true);
+        let pc = PhasedCellSync::<bool>::new(true);
         pc.read_count.fetch_add(1, atomic::Ordering::Release);
 
         let pc_1 = std::sync::Arc::new(pc);
@@ -301,7 +295,7 @@ mod tests_of_pause {
 
     #[test]
     fn graceful_wait_if_read_count_becomes_zero_after_10th_sleep() {
-        let pc = PhasedCell::<bool>::new(true);
+        let pc = PhasedCellSync::<bool>::new(true);
         pc.read_count.fetch_add(1, atomic::Ordering::Release);
 
         let pc_1 = std::sync::Arc::new(pc);
@@ -327,7 +321,7 @@ mod tests_of_pause {
 
     #[test]
     fn graceful_wait_if_timeout() {
-        let pc = PhasedCell::<bool>::new(true);
+        let pc = PhasedCellSync::<bool>::new(true);
         pc.read_count.fetch_add(1, atomic::Ordering::Release);
 
         let pc_1 = std::sync::Arc::new(pc);

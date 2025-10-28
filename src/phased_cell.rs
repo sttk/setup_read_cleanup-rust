@@ -3,7 +3,7 @@
 // See the file LICENSE in this distribution for more details.
 
 use crate::phase::*;
-use crate::{Phase, PhasedCell, PhasedError, PhasedErrorKind, Wait};
+use crate::{Phase, PhasedCell, PhasedError, PhasedErrorKind};
 
 use std::{any, cell, error, marker, sync::atomic};
 
@@ -14,7 +14,6 @@ impl<T: Send + Sync> PhasedCell<T> {
     pub const fn new(data: T) -> Self {
         Self {
             phase: atomic::AtomicU8::new(PHASE_SETUP),
-            read_count: atomic::AtomicUsize::new(0),
             data_cell: cell::UnsafeCell::new(data),
             _marker: marker::PhantomData,
         }
@@ -43,110 +42,25 @@ impl<T: Send + Sync> PhasedCell<T> {
         Ok(data)
     }
 
-    pub fn read_gracefully(&self) -> Result<&T, PhasedError> {
-        let mut phase = 0u8;
-        let result = self.read_count.fetch_update(
-            atomic::Ordering::AcqRel,
-            atomic::Ordering::Acquire,
-            |count| {
-                phase = self.phase.load(atomic::Ordering::Acquire);
-                if phase != PHASE_READ {
-                    None
-                } else {
-                    Some(count + 1)
-                }
-            },
-        );
-
-        if result.is_err() {
-            return Err(PhasedError::new(
-                u8_to_phase(phase),
-                PhasedErrorKind::CannotCallUnlessPhaseRead(Self::method_name("read_gracefully")),
-            ));
-        }
-
-        let data = unsafe { &*self.data_cell.get() };
-        Ok(data)
-    }
-
-    pub fn finish_reading_gracefully(&self) -> Result<(), PhasedError> {
-        let phase = self.phase.load(atomic::Ordering::Acquire);
-        if phase == PHASE_SETUP || phase == PHASE_SETUP_TO_READ {
-            return Err(PhasedError::new(
-                u8_to_phase(phase),
-                PhasedErrorKind::CannotCallOnPhaseSetup(Self::method_name(
-                    "finish_reading_gracefully",
-                )),
-            ));
-        }
-
-        if self
-            .read_count
-            .fetch_update(
-                atomic::Ordering::AcqRel,
-                atomic::Ordering::Acquire,
-                |count| {
-                    if count == 0 {
-                        None
-                    } else {
-                        Some(count - 1)
-                    }
-                },
-            )
-            .is_err()
-        {
-            eprintln!(
-                "{} is called excessively.",
-                Self::method_name("finish_reading_gracefully"),
-            );
-        }
-
-        Ok(())
-    }
-
-    pub fn transition_to_cleanup(&self, wait: Wait) -> Result<(), PhasedError> {
+    pub fn transition_to_cleanup(&self) -> Result<(), PhasedError> {
         match self.phase.fetch_update(
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
             |current_phase| match current_phase {
-                PHASE_SETUP => Some(PHASE_SETUP_TO_CLEANUP),
-                PHASE_READ => Some(PHASE_READ_TO_CLEANUP),
+                PHASE_SETUP => Some(PHASE_CLEANUP),
+                PHASE_READ => Some(PHASE_CLEANUP),
                 _ => None,
             },
         ) {
-            Ok(PHASE_SETUP) => {
-                let _result = self.pause(wait);
-                self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
-                Ok(())
-            }
-            Ok(PHASE_READ) => {
-                let result = self.pause(wait);
-                self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
-                match result {
-                    Ok(_) => Ok(()),
-                    Err(w) => Err(PhasedError::new(
-                        u8_to_phase(PHASE_READ_TO_CLEANUP),
-                        PhasedErrorKind::TransitionToCleanupTimeout(w),
-                    )),
-                }
-            }
+            Ok(_) => Ok(()),
             Err(PHASE_CLEANUP) => Err(PhasedError::new(
                 u8_to_phase(PHASE_CLEANUP),
                 PhasedErrorKind::PhaseIsAlreadyCleanup,
-            )),
-            Err(PHASE_READ_TO_CLEANUP) => Err(PhasedError::new(
-                u8_to_phase(PHASE_READ_TO_CLEANUP),
-                PhasedErrorKind::DuringTransitionToCleanup,
-            )),
-            Err(PHASE_SETUP_TO_CLEANUP) => Err(PhasedError::new(
-                u8_to_phase(PHASE_SETUP_TO_CLEANUP),
-                PhasedErrorKind::DuringTransitionToCleanup,
             )),
             Err(old_phase_cd) => Err(PhasedError::new(
                 u8_to_phase(old_phase_cd),
                 PhasedErrorKind::TransitionToCleanupFailed,
             )),
-            Ok(_) => Ok(()), // impossible case.
         }
     }
 
@@ -276,7 +190,7 @@ mod tests_of_phased_cell {
         assert_eq!(cell.phase_fast(), Phase::Read);
         assert_eq!(cell.phase_exact(), Phase::Read);
 
-        if let Err(e) = cell.transition_to_cleanup(Wait::Zero) {
+        if let Err(e) = cell.transition_to_cleanup() {
             panic!("{e:?}");
         }
         assert_eq!(cell.phase_fast(), Phase::Cleanup);
@@ -289,7 +203,7 @@ mod tests_of_phased_cell {
         assert_eq!(cell.phase_fast(), Phase::Setup);
         assert_eq!(cell.phase_exact(), Phase::Setup);
 
-        if let Err(e) = cell.transition_to_cleanup(Wait::Zero) {
+        if let Err(e) = cell.transition_to_cleanup() {
             panic!("{e:?}");
         }
         assert_eq!(cell.phase_fast(), Phase::Cleanup);
@@ -324,7 +238,7 @@ mod tests_of_phased_cell {
         }
 
         // Read -> Cleanup
-        if let Err(e) = cell.transition_to_cleanup(Wait::Zero) {
+        if let Err(e) = cell.transition_to_cleanup() {
             panic!("{e:?}");
         }
         assert_eq!(cell.phase_fast(), Phase::Cleanup);
@@ -344,7 +258,7 @@ mod tests_of_phased_cell {
     }
 
     #[test]
-    fn read_fast_internal_data_in_multi_threads_and_wait_zero() {
+    fn read_fast_internal_data_in_multi_threads() {
         let cell = PhasedCell::new(MyStruct::new());
 
         match cell.get_mut() {
@@ -384,120 +298,7 @@ mod tests_of_phased_cell {
         }
 
         // Read -> Cleanup
-        if let Err(e) = cell.transition_to_cleanup(Wait::Zero) {
-            panic!("{e:?}");
-        }
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_exact(), Phase::Cleanup);
-
-        if let Ok(data) = cell.get_mut() {
-            data.add("!".to_string());
-            assert_eq!(
-                &data.vec,
-                &["Hello".to_string(), "World".to_string(), "!".to_string()]
-            );
-            data.clear();
-            assert_eq!(&data.vec, &[] as &[String]);
-        } else {
-            panic!();
-        }
-
-        assert_eq!(counter.load(atomic::Ordering::Acquire), 10);
-    }
-
-    #[test]
-    fn read_fast_internal_data_in_multi_threads_and_wait_fixed() {
-        let cell = PhasedCell::new(MyStruct::new());
-
-        match cell.get_mut() {
-            Ok(data) => data.add("Hello".to_string()),
-            Err(e) => panic!("{e:?}"),
-        }
-
-        // Setup -> Read
-        if let Err(e) = cell.transition_to_read(|data| {
-            data.add("World".to_string());
-            Ok::<(), MyError>(())
-        }) {
-            panic!("{e:?}");
-        }
-
-        let counter = Arc::new(atomic::AtomicU8::new(0));
-        let cell = Arc::new(cell);
-
-        for _i in 0..10 {
-            let cell_clone = Arc::clone(&cell);
-            let counter_clone = Arc::clone(&counter);
-            let _handler = std::thread::spawn(move || {
-                let data = cell_clone.read_fast().unwrap();
-                assert_eq!(data.vec.as_slice().join(", "), "Hello, World");
-                std::thread::sleep(std::time::Duration::from_secs(1));
-                counter_clone.fetch_add(1, atomic::Ordering::Release);
-                //println!("{}. {}", _i, data.vec.as_slice().join(", "));
-            });
-        }
-        std::thread::sleep(std::time::Duration::from_millis(300));
-
-        // Read -> Cleanup
-        if let Err(e) = cell.transition_to_cleanup(Wait::Fixed(std::time::Duration::from_secs(1))) {
-            panic!("{e:?}");
-        }
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_exact(), Phase::Cleanup);
-
-        if let Ok(data) = cell.get_mut() {
-            data.add("!".to_string());
-            assert_eq!(
-                &data.vec,
-                &["Hello".to_string(), "World".to_string(), "!".to_string()]
-            );
-            data.clear();
-            assert_eq!(&data.vec, &[] as &[String]);
-        } else {
-            panic!();
-        }
-
-        assert_eq!(counter.load(atomic::Ordering::Acquire), 10);
-    }
-
-    #[test]
-    fn read_gracefully_internal_data_in_multi_threads_and_wait_gracefully() {
-        let cell = PhasedCell::new(MyStruct::new());
-
-        match cell.get_mut() {
-            Ok(data) => data.add("Hello".to_string()),
-            Err(e) => panic!("{e:?}"),
-        }
-
-        // Setup -> Read
-        if let Err(e) = cell.transition_to_read(|data| {
-            data.add("World".to_string());
-            Ok::<(), MyError>(())
-        }) {
-            panic!("{e:?}");
-        }
-
-        let counter = Arc::new(atomic::AtomicU8::new(0));
-        let cell = Arc::new(cell);
-
-        for _i in 0..10 {
-            let cell_clone = Arc::clone(&cell);
-            let counter_clone = Arc::clone(&counter);
-            let _handler = std::thread::spawn(move || {
-                let data = cell_clone.read_gracefully().unwrap();
-                assert_eq!(data.vec.as_slice().join(", "), "Hello, World");
-                std::thread::sleep(std::time::Duration::from_secs(1));
-                counter_clone.fetch_add(1, atomic::Ordering::Release);
-                cell_clone.finish_reading_gracefully().unwrap();
-                //println!("{}. {}", _i, data.vec.as_slice().join(", "));
-            });
-        }
-        std::thread::sleep(std::time::Duration::from_millis(300));
-
-        // Read -> Cleanup
-        if let Err(e) = cell.transition_to_cleanup(Wait::Graceful {
-            timeout: std::time::Duration::from_secs(5),
-        }) {
+        if let Err(e) = cell.transition_to_cleanup() {
             panic!("{e:?}");
         }
         assert_eq!(cell.phase_fast(), Phase::Cleanup);
@@ -542,7 +343,7 @@ mod tests_of_phased_cell {
         let cell = PhasedCell::new(MyStruct::new());
         assert_eq!(cell.phase_fast(), Phase::Setup);
 
-        if let Err(e) = cell.transition_to_cleanup(Wait::Zero) {
+        if let Err(e) = cell.transition_to_cleanup() {
             panic!("{e:?}");
         }
 
@@ -558,191 +359,6 @@ mod tests_of_phased_cell {
 
         assert_eq!(cell.phase_fast(), Phase::Cleanup);
         assert_eq!(cell.phase_exact(), Phase::Cleanup);
-    }
-
-    #[test]
-    fn fail_to_read_gracefully_if_phase_is_setup() {
-        let cell = PhasedCell::new(MyStruct::new());
-        assert_eq!(cell.phase_fast(), Phase::Setup);
-
-        if let Err(e) = cell.read_gracefully() {
-            assert_eq!(e.phase, Phase::Setup);
-            assert_eq!(
-                e.kind,
-                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCell<setup_read_cleanup::phased_cell::tests_of_phased_cell::MyStruct>::read_gracefully".to_string())
-            );
-        } else {
-            panic!();
-        }
-
-        assert_eq!(cell.phase_fast(), Phase::Setup);
-        assert_eq!(cell.phase_exact(), Phase::Setup);
-    }
-
-    #[test]
-    fn fail_to_read_gracefully_if_phase_is_cleanup() {
-        let cell = PhasedCell::new(MyStruct::new());
-        assert_eq!(cell.phase_fast(), Phase::Setup);
-
-        if let Err(e) = cell.transition_to_cleanup(Wait::Zero) {
-            panic!("{e:?}");
-        }
-
-        if let Err(e) = cell.read_gracefully() {
-            assert_eq!(e.phase, Phase::Cleanup);
-            assert_eq!(
-                e.kind,
-                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCell<setup_read_cleanup::phased_cell::tests_of_phased_cell::MyStruct>::read_gracefully".to_string())
-            );
-        } else {
-            panic!();
-        }
-
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_exact(), Phase::Cleanup);
-    }
-
-    #[test]
-    fn fail_to_finish_reading_gracefully_if_phase_is_setup() {
-        let cell = PhasedCell::new(MyStruct::new());
-        assert_eq!(cell.phase_fast(), Phase::Setup);
-
-        if let Err(e) = cell.finish_reading_gracefully() {
-            assert_eq!(e.phase, Phase::Setup);
-            assert_eq!(
-                e.kind,
-                PhasedErrorKind::CannotCallOnPhaseSetup("setup_read_cleanup::PhasedCell<setup_read_cleanup::phased_cell::tests_of_phased_cell::MyStruct>::finish_reading_gracefully".to_string())
-            );
-        } else {
-            panic!();
-        }
-
-        assert_eq!(cell.phase_fast(), Phase::Setup);
-        assert_eq!(cell.phase_exact(), Phase::Setup);
-    }
-
-    #[test]
-    fn dont_fail_to_finish_reading_gracefully_if_phase_is_cleanup() {
-        let cell = PhasedCell::new(MyStruct::new());
-        assert_eq!(cell.phase_fast(), Phase::Setup);
-
-        if let Err(e) = cell.transition_to_read(|_| Ok::<(), MyError>(())) {
-            panic!("{e:?}");
-        }
-
-        let _result = cell.read_gracefully();
-
-        if let Err(e) = cell.transition_to_cleanup(Wait::Zero) {
-            panic!("{e:?}");
-        }
-
-        if let Err(e) = cell.finish_reading_gracefully() {
-            panic!("{e:?}");
-        }
-
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_exact(), Phase::Cleanup);
-    }
-
-    #[test]
-    fn dont_fail_to_finish_reading_gracefully_if_it_is_called_excessively() {
-        let cell = PhasedCell::new(MyStruct::new());
-        assert_eq!(cell.phase_fast(), Phase::Setup);
-
-        if let Err(e) = cell.transition_to_read(|_| Ok::<(), MyError>(())) {
-            panic!("{e:?}");
-        }
-
-        let _result = cell.read_gracefully();
-        let _result = cell.finish_reading_gracefully();
-
-        if let Err(e) = cell.transition_to_cleanup(Wait::Zero) {
-            panic!("{e:?}");
-        }
-
-        if let Err(e) = cell.finish_reading_gracefully() {
-            panic!("{e:?}");
-        }
-
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_exact(), Phase::Cleanup);
-    }
-
-    #[test]
-    fn dont_fail_but_return_error_if_graceful_wait_for_transition_to_cleanup_is_timeout() {
-        let cell = PhasedCell::new(MyStruct::new());
-
-        match cell.get_mut() {
-            Ok(data) => data.add("Hello".to_string()),
-            Err(e) => panic!("{e:?}"),
-        }
-
-        // Setup -> Read
-        if let Err(e) = cell.transition_to_read(|data| {
-            data.add("World".to_string());
-            Ok::<(), MyError>(())
-        }) {
-            panic!("{e:?}");
-        }
-
-        let counter = Arc::new(atomic::AtomicU8::new(0));
-        let cell = Arc::new(cell);
-
-        for i in 0..10 {
-            let cell_clone = Arc::clone(&cell);
-            let counter_clone = Arc::clone(&counter);
-            let _handler = std::thread::spawn(move || {
-                let data = cell_clone.read_gracefully().unwrap();
-                assert_eq!(data.vec.as_slice().join(", "), "Hello, World");
-                std::thread::sleep(std::time::Duration::from_secs(i + 1));
-                counter_clone.fetch_add(1, atomic::Ordering::Release);
-                cell_clone.finish_reading_gracefully().unwrap();
-                //println!("{}. {}", i, data.vec.as_slice().join(", "));
-            });
-        }
-        std::thread::sleep(std::time::Duration::from_secs(3));
-
-        // Read -> Cleanup
-        if let Err(e) = cell.transition_to_cleanup(Wait::Graceful {
-            timeout: std::time::Duration::from_secs(1),
-        }) {
-            assert_eq!(e.phase, Phase::Cleanup);
-            assert_eq!(
-                e.kind,
-                PhasedErrorKind::TransitionToCleanupTimeout(Wait::Graceful {
-                    timeout: std::time::Duration::from_secs(1),
-                })
-            );
-        } else {
-            panic!();
-        }
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_exact(), Phase::Cleanup);
-
-        if let Ok(data) = cell.get_mut() {
-            data.add("!".to_string());
-            assert_eq!(
-                &data.vec,
-                &["Hello".to_string(), "World".to_string(), "!".to_string()]
-            );
-            data.clear();
-            assert_eq!(&data.vec, &[] as &[String]);
-        } else {
-            panic!();
-        }
-
-        #[cfg(target_os = "linux")]
-        assert!(counter.load(atomic::Ordering::Acquire) >= 3);
-        #[cfg(target_os = "linux")]
-        assert!(counter.load(atomic::Ordering::Acquire) <= 4);
-        #[cfg(target_os = "windows")]
-        assert!(counter.load(atomic::Ordering::Acquire) >= 3);
-        #[cfg(target_os = "windows")]
-        assert!(counter.load(atomic::Ordering::Acquire) <= 4);
-        #[cfg(target_os = "macos")]
-        assert!(counter.load(atomic::Ordering::Acquire) >= 3);
-        #[cfg(target_os = "macos")]
-        assert!(counter.load(atomic::Ordering::Acquire) <= 4);
     }
 
     #[test]
@@ -797,7 +413,7 @@ mod tests_of_phased_cell {
             panic!("{e:?}");
         }
 
-        if let Err(e) = cell.transition_to_cleanup(Wait::Zero) {
+        if let Err(e) = cell.transition_to_cleanup() {
             panic!("{e:?}");
         }
 
@@ -821,11 +437,11 @@ mod tests_of_phased_cell {
             panic!("{e:?}");
         }
 
-        if let Err(e) = cell.transition_to_cleanup(Wait::Zero) {
+        if let Err(e) = cell.transition_to_cleanup() {
             panic!("{e:?}");
         }
 
-        if let Err(e) = cell.transition_to_cleanup(Wait::Zero) {
+        if let Err(e) = cell.transition_to_cleanup() {
             assert_eq!(e.phase, Phase::Cleanup);
             assert_eq!(e.kind, PhasedErrorKind::PhaseIsAlreadyCleanup);
         } else {
@@ -834,42 +450,6 @@ mod tests_of_phased_cell {
 
         assert_eq!(cell.phase_fast(), Phase::Cleanup);
         assert_eq!(cell.phase_exact(), Phase::Cleanup);
-    }
-
-    #[test]
-    fn fail_to_finish_reading_gracefully_during_transition_to_read() {
-        let cell = PhasedCell::new(MyStruct::new());
-
-        let cell = Arc::new(cell);
-
-        let mut join_handlers = Vec::<std::thread::JoinHandle<_>>::new();
-
-        let cell_clone = Arc::clone(&cell);
-        let handler = std::thread::spawn(move || {
-            if let Err(e) = cell_clone.transition_to_read(|_data| {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-                Ok::<(), MyError>(())
-            }) {
-                panic!("{e:?}");
-            }
-        });
-        join_handlers.push(handler);
-
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        if let Err(e) = cell.finish_reading_gracefully() {
-            assert_eq!(e.kind, PhasedErrorKind::CannotCallOnPhaseSetup("setup_read_cleanup::PhasedCell<setup_read_cleanup::phased_cell::tests_of_phased_cell::MyStruct>::finish_reading_gracefully".to_string()),
-            );
-        } else {
-            panic!();
-        }
-
-        while join_handlers.len() > 0 {
-            let _result = join_handlers.remove(0).join();
-        }
-
-        assert_eq!(cell.phase_fast(), Phase::Read);
-        assert_eq!(cell.phase_exact(), Phase::Read);
     }
 
     #[test]
@@ -905,78 +485,6 @@ mod tests_of_phased_cell {
 
         assert_eq!(cell.phase_fast(), Phase::Read);
         assert_eq!(cell.phase_exact(), Phase::Read);
-    }
-
-    #[test]
-    fn fail_to_get_mut_during_transition_to_cleanup_from_setup() {
-        let cell = PhasedCell::new(MyStruct::new());
-
-        let cell = Arc::new(cell);
-
-        let mut join_handlers = Vec::<std::thread::JoinHandle<_>>::new();
-
-        let cell_clone = Arc::clone(&cell);
-        let handler = std::thread::spawn(move || {
-            if let Err(e) =
-                cell_clone.transition_to_cleanup(Wait::Fixed(std::time::Duration::from_secs(1)))
-            {
-                panic!("{e:?}");
-            }
-        });
-        join_handlers.push(handler);
-
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        if let Err(e) = cell.get_mut() {
-            assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
-        } else {
-            panic!();
-        }
-
-        while join_handlers.len() > 0 {
-            let _result = join_handlers.remove(0).join();
-        }
-
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_exact(), Phase::Cleanup);
-    }
-
-    #[test]
-    fn fail_to_get_mut_during_transition_to_cleanup_from_read() {
-        let cell = PhasedCell::new(MyStruct::new());
-
-        if let Err(e) = cell.transition_to_read(|_data| Ok::<(), MyError>(())) {
-            panic!("{e:?}");
-        }
-
-        let cell = Arc::new(cell);
-
-        let mut join_handlers = Vec::<std::thread::JoinHandle<_>>::new();
-
-        let cell_clone = Arc::clone(&cell);
-        let handler = std::thread::spawn(move || {
-            if let Err(e) =
-                cell_clone.transition_to_cleanup(Wait::Fixed(std::time::Duration::from_secs(1)))
-            {
-                panic!("{e:?}");
-            }
-        });
-        join_handlers.push(handler);
-
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        if let Err(e) = cell.get_mut() {
-            assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
-        } else {
-            panic!();
-        }
-
-        while join_handlers.len() > 0 {
-            let _result = join_handlers.remove(0).join();
-        }
-
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_exact(), Phase::Cleanup);
     }
 
     #[test]
@@ -1041,9 +549,7 @@ mod tests_of_phased_cell {
 
         let cell_clone = Arc::clone(&cell);
         let handler = std::thread::spawn(move || {
-            if let Err(e) =
-                cell_clone.transition_to_cleanup(Wait::Fixed(std::time::Duration::from_secs(1)))
-            {
+            if let Err(e) = cell_clone.transition_to_cleanup() {
                 panic!("{e:?}");
             }
         });
@@ -1093,7 +599,7 @@ mod tests_of_phased_cell {
 
         let cell_clone = Arc::clone(&cell);
         let handler = std::thread::spawn(move || {
-            if let Err(e) = cell_clone.transition_to_cleanup(Wait::Zero) {
+            if let Err(e) = cell_clone.transition_to_cleanup() {
                 assert_eq!(e.kind, PhasedErrorKind::TransitionToCleanupFailed);
             } else {
                 panic!();
@@ -1107,85 +613,5 @@ mod tests_of_phased_cell {
 
         assert_eq!(cell.phase_fast(), Phase::Read);
         assert_eq!(cell.phase_exact(), Phase::Read);
-    }
-
-    #[test]
-    fn fail_to_transition_to_cleanup_during_transition_to_cleanup_from_setup() {
-        let cell = PhasedCell::new(MyStruct::new());
-
-        let cell = Arc::new(cell);
-
-        let mut join_handlers = Vec::<std::thread::JoinHandle<_>>::new();
-
-        let cell_clone = Arc::clone(&cell);
-        let handler = std::thread::spawn(move || {
-            if let Err(e) =
-                cell_clone.transition_to_cleanup(Wait::Fixed(std::time::Duration::from_secs(1)))
-            {
-                panic!("{e:?}");
-            }
-        });
-        join_handlers.push(handler);
-
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        let cell_clone = Arc::clone(&cell);
-        let handler = std::thread::spawn(move || {
-            if let Err(e) = cell_clone.transition_to_cleanup(Wait::Zero) {
-                assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
-            } else {
-                panic!();
-            }
-        });
-        join_handlers.push(handler);
-
-        while join_handlers.len() > 0 {
-            let _result = join_handlers.remove(0).join();
-        }
-
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_exact(), Phase::Cleanup);
-    }
-
-    #[test]
-    fn fail_to_transition_to_cleanup_during_transition_to_cleanup_from_read() {
-        let cell = PhasedCell::new(MyStruct::new());
-
-        if let Err(e) = cell.transition_to_read(|_data| Ok::<(), MyError>(())) {
-            panic!("{e:?}");
-        }
-
-        let cell = Arc::new(cell);
-
-        let mut join_handlers = Vec::<std::thread::JoinHandle<_>>::new();
-
-        let cell_clone = Arc::clone(&cell);
-        let handler = std::thread::spawn(move || {
-            if let Err(e) =
-                cell_clone.transition_to_cleanup(Wait::Fixed(std::time::Duration::from_secs(1)))
-            {
-                panic!("{e:?}");
-            }
-        });
-        join_handlers.push(handler);
-
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        let cell_clone = Arc::clone(&cell);
-        let handler = std::thread::spawn(move || {
-            if let Err(e) = cell_clone.transition_to_cleanup(Wait::Zero) {
-                assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
-            } else {
-                panic!();
-            }
-        });
-        join_handlers.push(handler);
-
-        while join_handlers.len() > 0 {
-            let _result = join_handlers.remove(0).join();
-        }
-
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_exact(), Phase::Cleanup);
     }
 }
