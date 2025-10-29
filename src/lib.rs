@@ -34,6 +34,7 @@ pub enum PhasedErrorKind {
     TransitionToCleanupFailed,
     TransitionToCleanupTimeout(Wait),
     FailToRunClosureDuringTransitionToRead,
+    FailToRunClosureDuringTransitionToCleanup,
     StdMutexIsPoisoned,
 }
 
