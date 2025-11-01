@@ -59,10 +59,13 @@ pub struct PhasedCell<T: Send + Sync> {
 
 pub struct PhasedCellSync<T: Send + Sync> {
     phase: atomic::AtomicU8,
-    read_count: atomic::AtomicUsize,
     data_mutex: std::sync::Mutex<Option<T>>,
     data_cell: cell::UnsafeCell<Option<T>>,
     _marker: marker::PhantomData<T>,
+}
+
+pub struct StdMutexGuard<'mutex, T> {
+    inner: std::sync::MutexGuard<'mutex, Option<T>>,
 }
 
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
@@ -72,10 +75,6 @@ pub struct PhasedCellAsync<T: Send + Sync> {
     data_mutex: tokio::sync::Mutex<Option<T>>,
     data_cell: cell::UnsafeCell<Option<T>>,
     _marker: marker::PhantomData<T>,
-}
-
-pub struct PhasedStdMutexGuard<'mutex, T> {
-    inner: std::sync::MutexGuard<'mutex, Option<T>>,
 }
 
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
