@@ -140,7 +140,7 @@ impl<T: Send + Sync> PhasedCellSync<T> {
                 Err(_) => {
                     self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_READ);
                     Err(PhasedError::new(
-                        u8_to_phase(PHASE_READ),
+                        u8_to_phase(PHASE_READ_TO_CLEANUP),
                         PhasedErrorKind::StdMutexIsPoisoned,
                     ))
                 }
@@ -178,6 +178,14 @@ impl<T: Send + Sync> PhasedCellSync<T> {
             Err(PHASE_CLEANUP) => Err(PhasedError::new(
                 u8_to_phase(PHASE_CLEANUP),
                 PhasedErrorKind::PhaseIsAlreadyCleanup,
+            )),
+            Err(PHASE_READ_TO_CLEANUP) => Err(PhasedError::new(
+                u8_to_phase(PHASE_READ_TO_CLEANUP),
+                PhasedErrorKind::DuringTransitionToCleanup,
+            )),
+            Err(PHASE_SETUP_TO_CLEANUP) => Err(PhasedError::new(
+                u8_to_phase(PHASE_SETUP_TO_CLEANUP),
+                PhasedErrorKind::DuringTransitionToCleanup,
             )),
             Err(old_phase_cd) => Err(PhasedError::new(
                 u8_to_phase(old_phase_cd),
@@ -434,7 +442,10 @@ mod tests_of_phased_cell_sync {
         }
 
         // Read -> Cleanup
-        if let Err(e) = cell.transition_to_cleanup(|_data| Ok::<(), MyError>(())) {
+        if let Err(e) = cell.transition_to_cleanup(|data| {
+            data.add(" ** ".to_string());
+            Ok::<(), MyError>(())
+        }) {
             panic!("{e:?}");
         }
         assert_eq!(cell.phase_fast(), Phase::Cleanup);
@@ -483,6 +494,7 @@ mod tests_of_phased_cell_sync {
               "o".to_string(),
               // --
               ",".to_string(),
+              " ** ".to_string(),
               // --
               "W".to_string(),
               "o".to_string(),
@@ -555,7 +567,10 @@ mod tests_of_phased_cell_sync {
         }
 
         // Read -> Cleanup
-        if let Err(e) = cell.transition_to_cleanup(|_data| Ok::<(), MyError>(())) {
+        if let Err(e) = cell.transition_to_cleanup(|data| {
+            data.add("**".to_string());
+            Ok::<(), MyError>(())
+        }) {
             panic!("{e:?}");
         }
         assert_eq!(cell.phase_fast(), Phase::Cleanup);
@@ -565,7 +580,12 @@ mod tests_of_phased_cell_sync {
             data.add("!".to_string());
             assert_eq!(
                 &data.vec,
-                &["Hello".to_string(), "World".to_string(), "!".to_string()]
+                &[
+                    "Hello".to_string(),
+                    "World".to_string(),
+                    "**".to_string(),
+                    "!".to_string()
+                ]
             );
             data.clear();
             assert_eq!(&data.vec, &[] as &[String]);

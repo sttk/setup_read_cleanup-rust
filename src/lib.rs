@@ -6,12 +6,11 @@ mod errors;
 mod phase;
 mod phased_cell;
 mod phased_cell_sync;
-mod wait;
 
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 mod phased_cell_async;
 
-use std::{cell, error, marker, sync::atomic, time};
+use std::{cell, error, marker, sync::atomic};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -32,7 +31,6 @@ pub enum PhasedErrorKind {
     DuringTransitionToCleanup,
     TransitionToReadFailed,
     TransitionToCleanupFailed,
-    TransitionToCleanupTimeout(Wait),
     FailToRunClosureDuringTransitionToRead,
     FailToRunClosureDuringTransitionToCleanup,
     StdMutexIsPoisoned,
@@ -42,13 +40,6 @@ pub struct PhasedError {
     pub phase: Phase,
     pub kind: PhasedErrorKind,
     source: Option<Box<dyn error::Error + Send + Sync>>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Wait {
-    Zero,
-    Fixed(time::Duration),
-    Graceful { timeout: time::Duration },
 }
 
 pub struct PhasedCell<T: Send + Sync> {
@@ -71,13 +62,12 @@ pub struct StdMutexGuard<'mutex, T> {
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 pub struct PhasedCellAsync<T: Send + Sync> {
     phase: atomic::AtomicU8,
-    read_count: atomic::AtomicUsize,
     data_mutex: tokio::sync::Mutex<Option<T>>,
     data_cell: cell::UnsafeCell<Option<T>>,
     _marker: marker::PhantomData<T>,
 }
 
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
-pub struct PhasedTokioMutexGuard<'mutex, T> {
+pub struct TokioMutexGuard<'mutex, T> {
     inner: tokio::sync::MutexGuard<'mutex, Option<T>>,
 }
