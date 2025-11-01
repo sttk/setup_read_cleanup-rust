@@ -91,6 +91,14 @@ impl<T: Send + Sync> PhasedCell<T> {
                 u8_to_phase(PHASE_CLEANUP),
                 PhasedErrorKind::PhaseIsAlreadyCleanup,
             )),
+            Err(PHASE_READ_TO_CLEANUP) => Err(PhasedError::new(
+                u8_to_phase(PHASE_READ_TO_CLEANUP),
+                PhasedErrorKind::DuringTransitionToCleanup,
+            )),
+            Err(PHASE_SETUP_TO_CLEANUP) => Err(PhasedError::new(
+                u8_to_phase(PHASE_SETUP_TO_CLEANUP),
+                PhasedErrorKind::DuringTransitionToCleanup,
+            )),
             Err(old_phase_cd) => Err(PhasedError::new(
                 u8_to_phase(old_phase_cd),
                 PhasedErrorKind::TransitionToCleanupFailed,
