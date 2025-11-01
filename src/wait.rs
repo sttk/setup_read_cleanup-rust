@@ -2,54 +2,16 @@
 // This program is free software under MIT License.
 // See the file LICENSE in this distribution for more details.
 
-use crate::{PhasedCellSync, Wait};
+#[cfg(feature = "setup_read_cleanup-on-tokio")]
+use crate::{PhasedCellAsync, Wait};
 
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
-use crate::PhasedCellAsync;
-
 use std::sync::atomic;
-
-impl<T: Send + Sync> PhasedCellSync<T> {
-    pub(crate) fn pause(&self, wait: Wait) -> Result<(), Wait> {
-        pause(&self.read_count, wait)
-    }
-}
 
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 impl<T: Send + Sync> PhasedCellAsync<T> {
     pub(crate) async fn pause_async(&self, wait: Wait) -> Result<(), Wait> {
         pause_async(&self.read_count, wait).await
-    }
-}
-
-fn pause(counter: &atomic::AtomicUsize, wait: Wait) -> Result<(), Wait> {
-    match wait {
-        Wait::Zero => Ok(()),
-        Wait::Fixed(tm) => {
-            std::thread::sleep(tm);
-            Ok(())
-        }
-        Wait::Graceful { timeout } => {
-            if counter.load(atomic::Ordering::Acquire) == 0 {
-                return Ok(());
-            }
-
-            // Σ2^n = 2^(n+1)-1 = 1, 3, 7, 15, 31, 63, 127, 255, 511, 1023
-            let s = timeout.div_f32(1023.0);
-            let mut r = 2.0;
-
-            let start = std::time::Instant::now();
-            let mut elapsed: std::time::Duration = start.elapsed();
-            while elapsed < timeout {
-                std::thread::sleep(s.mul_f32(r - 1.0).saturating_sub(elapsed));
-                if counter.load(atomic::Ordering::Acquire) == 0 {
-                    return Ok(());
-                }
-                r *= 2.0;
-                elapsed = start.elapsed();
-            }
-            Err(wait)
-        }
     }
 }
 
@@ -85,6 +47,7 @@ async fn pause_async(counter: &atomic::AtomicUsize, wait: Wait) -> Result<(), Wa
     }
 }
 
+/*
 #[cfg(test)]
 mod tests_of_pause {
     use super::*;
@@ -626,3 +589,4 @@ mod tests_of_pause_async {
         // #[cfg(target_os = "macos")]
     }
 }
+*/
