@@ -52,22 +52,22 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
         }
     }
 
-    pub fn phase_fast(&self) -> Phase {
+    pub fn phase_relaxed(&self) -> Phase {
         let phase = self.phase.load(atomic::Ordering::Relaxed);
         u8_to_phase(phase)
     }
 
-    pub fn phase_properly(&self) -> Phase {
+    pub fn phase(&self) -> Phase {
         let phase = self.phase.load(atomic::Ordering::Acquire);
         u8_to_phase(phase)
     }
 
-    pub fn read_fast(&self) -> Result<&T, PhasedError> {
+    pub fn read_relaxed(&self) -> Result<&T, PhasedError> {
         let phase = self.phase.load(atomic::Ordering::Relaxed);
         if phase != PHASE_READ {
             return Err(PhasedError::new(
                 u8_to_phase(phase),
-                PhasedErrorKind::CannotCallUnlessPhaseRead(Self::method_name("read_fast")),
+                PhasedErrorKind::CannotCallUnlessPhaseRead(Self::method_name("read_relaxed")),
             ));
         }
 
@@ -81,12 +81,12 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
         }
     }
 
-    pub fn read_properly(&self) -> Result<&T, PhasedError> {
+    pub fn read(&self) -> Result<&T, PhasedError> {
         let phase = self.phase.load(atomic::Ordering::Acquire);
         if phase != PHASE_READ {
             return Err(PhasedError::new(
                 u8_to_phase(phase),
-                PhasedErrorKind::CannotCallUnlessPhaseRead(Self::method_name("read_properly")),
+                PhasedErrorKind::CannotCallUnlessPhaseRead(Self::method_name("read")),
             ));
         }
 
@@ -318,8 +318,8 @@ mod tests_of_phased_cell_async {
     #[tokio::test]
     async fn transition_from_setup_to_read_then_cleanup() {
         let cell = PhasedCellAsync::new(MyStruct::new());
-        assert_eq!(cell.phase_fast(), Phase::Setup);
-        assert_eq!(cell.phase_properly(), Phase::Setup);
+        assert_eq!(cell.phase_relaxed(), Phase::Setup);
+        assert_eq!(cell.phase(), Phase::Setup);
 
         if let Err(e) = cell
             .transition_to_read_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
@@ -327,8 +327,8 @@ mod tests_of_phased_cell_async {
         {
             panic!("{e:?}");
         }
-        assert_eq!(cell.phase_fast(), Phase::Read);
-        assert_eq!(cell.phase_properly(), Phase::Read);
+        assert_eq!(cell.phase_relaxed(), Phase::Read);
+        assert_eq!(cell.phase(), Phase::Read);
 
         if let Err(e) = cell
             .transition_to_cleanup_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
@@ -336,15 +336,15 @@ mod tests_of_phased_cell_async {
         {
             panic!("{e:?}");
         }
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_properly(), Phase::Cleanup);
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
     }
 
     #[tokio::test]
     async fn transition_from_setup_to_cleanup() {
         let cell = PhasedCellAsync::new(MyStruct::new());
-        assert_eq!(cell.phase_fast(), Phase::Setup);
-        assert_eq!(cell.phase_properly(), Phase::Setup);
+        assert_eq!(cell.phase_relaxed(), Phase::Setup);
+        assert_eq!(cell.phase(), Phase::Setup);
 
         if let Err(e) = cell
             .transition_to_cleanup_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
@@ -352,15 +352,15 @@ mod tests_of_phased_cell_async {
         {
             panic!("{e:?}");
         }
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_properly(), Phase::Cleanup);
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
     }
 
     #[tokio::test]
     async fn update_internal_data_in_setup_and_cleanup_phases() {
         let cell = PhasedCellAsync::new(MyStruct::new());
-        assert_eq!(cell.phase_fast(), Phase::Setup);
-        assert_eq!(cell.phase_properly(), Phase::Setup);
+        assert_eq!(cell.phase_relaxed(), Phase::Setup);
+        assert_eq!(cell.phase(), Phase::Setup);
 
         let cell = Arc::new(cell);
 
@@ -398,10 +398,10 @@ mod tests_of_phased_cell_async {
         {
             panic!("{e:?}");
         }
-        assert_eq!(cell.phase_fast(), Phase::Read);
-        assert_eq!(cell.phase_properly(), Phase::Read);
+        assert_eq!(cell.phase_relaxed(), Phase::Read);
+        assert_eq!(cell.phase(), Phase::Read);
 
-        if let Ok(data) = cell.read_fast() {
+        if let Ok(data) = cell.read_relaxed() {
             assert_eq!(
                 &data.vec,
                 &[
@@ -440,8 +440,8 @@ mod tests_of_phased_cell_async {
         {
             panic!("{e:?}");
         }
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_properly(), Phase::Cleanup);
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
 
         let mut join_handlers = Vec::<tokio::task::JoinHandle<_>>::new();
         for _i in 0..3 {
@@ -521,7 +521,7 @@ mod tests_of_phased_cell_async {
     }
 
     #[tokio::test]
-    async fn read_fast_internal_data_in_multi_threads_and_wait_zero() {
+    async fn read_relaxed_internal_data_in_multi_threads_and_wait_zero() {
         let cell = PhasedCellAsync::new(MyStruct::new());
 
         match cell.lock_async().await {
@@ -548,7 +548,7 @@ mod tests_of_phased_cell_async {
             let cell_clone = Arc::clone(&cell);
             let counter_clone = Arc::clone(&counter);
             let handler = tokio::task::spawn(async move {
-                let data = cell_clone.read_fast().unwrap();
+                let data = cell_clone.read_relaxed().unwrap();
                 assert_eq!(data.vec.as_slice().join(", "), "Hello, World");
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 counter_clone.fetch_add(1, atomic::Ordering::Release);
@@ -573,8 +573,8 @@ mod tests_of_phased_cell_async {
         {
             panic!("{e:?}");
         }
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_properly(), Phase::Cleanup);
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
 
         if let Ok(mut data) = cell.lock_async().await {
             data.add("!".to_string());
@@ -597,7 +597,7 @@ mod tests_of_phased_cell_async {
     }
 
     #[tokio::test]
-    async fn read_fast_internal_data_in_multi_threads_and_wait_fixed() {
+    async fn read_relaxed_internal_data_in_multi_threads_and_wait_fixed() {
         let cell = PhasedCellAsync::new(MyStruct::new());
 
         match cell.lock_async().await {
@@ -623,7 +623,7 @@ mod tests_of_phased_cell_async {
             let cell_clone = Arc::clone(&cell);
             let counter_clone = Arc::clone(&counter);
             let _handler = tokio::task::spawn(async move {
-                let data = cell_clone.read_fast().unwrap();
+                let data = cell_clone.read_relaxed().unwrap();
                 assert_eq!(data.vec.as_slice().join(", "), "Hello, World");
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 counter_clone.fetch_add(1, atomic::Ordering::Release);
@@ -644,8 +644,8 @@ mod tests_of_phased_cell_async {
         {
             panic!("{e:?}");
         }
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_properly(), Phase::Cleanup);
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
 
         if let Ok(mut data) = cell.lock_async().await {
             data.add("!".to_string());
@@ -689,7 +689,7 @@ mod tests_of_phased_cell_async {
             let cell_clone = Arc::clone(&cell);
             let counter_clone = Arc::clone(&counter);
             let _handler = tokio::task::spawn(async move {
-                let data = cell_clone.read_properly().unwrap();
+                let data = cell_clone.read().unwrap();
                 assert_eq!(data.vec.as_slice().join(", "), "Hello, World");
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 counter_clone.fetch_add(1, atomic::Ordering::Release);
@@ -710,8 +710,8 @@ mod tests_of_phased_cell_async {
         {
             panic!("{e:?}");
         }
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_properly(), Phase::Cleanup);
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
 
         if let Ok(mut data) = cell.lock_async().await {
             data.add("!".to_string());
@@ -729,66 +729,66 @@ mod tests_of_phased_cell_async {
     }
 
     #[tokio::test]
-    async fn fail_to_read_fast_if_phase_is_setup() {
+    async fn fail_to_read_relaxed_if_phase_is_setup() {
         let cell = PhasedCellAsync::new(MyStruct::new());
-        assert_eq!(cell.phase_fast(), Phase::Setup);
+        assert_eq!(cell.phase_relaxed(), Phase::Setup);
 
-        if let Err(e) = cell.read_fast() {
+        if let Err(e) = cell.read_relaxed() {
             assert_eq!(e.phase, Phase::Setup);
             assert_eq!(
                 e.kind,
-                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read_fast".to_string())
+                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read_relaxed".to_string())
             );
         } else {
             panic!();
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Setup);
-        assert_eq!(cell.phase_properly(), Phase::Setup);
+        assert_eq!(cell.phase_relaxed(), Phase::Setup);
+        assert_eq!(cell.phase(), Phase::Setup);
     }
 
     #[tokio::test]
-    async fn fail_to_read_fast_if_phase_is_cleanup() {
+    async fn fail_to_read_relaxed_if_phase_is_cleanup() {
         let cell = PhasedCellAsync::new(MyStruct::new());
-        assert_eq!(cell.phase_fast(), Phase::Setup);
+        assert_eq!(cell.phase_relaxed(), Phase::Setup);
 
-        if let Err(e) = cell.read_properly() {
+        if let Err(e) = cell.read() {
             assert_eq!(e.phase, Phase::Setup);
             assert_eq!(
                 e.kind,
-                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read_properly".to_string())
+                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read".to_string())
             );
         } else {
             panic!();
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Setup);
-        assert_eq!(cell.phase_properly(), Phase::Setup);
+        assert_eq!(cell.phase_relaxed(), Phase::Setup);
+        assert_eq!(cell.phase(), Phase::Setup);
     }
 
     #[tokio::test]
-    async fn fail_to_read_properly_if_phase_is_setup() {
+    async fn fail_to_read_if_phase_is_setup() {
         let cell = PhasedCellAsync::new(MyStruct::new());
-        assert_eq!(cell.phase_properly(), Phase::Setup);
+        assert_eq!(cell.phase(), Phase::Setup);
 
-        if let Err(e) = cell.read_properly() {
+        if let Err(e) = cell.read() {
             assert_eq!(e.phase, Phase::Setup);
             assert_eq!(
                 e.kind,
-                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read_properly".to_string())
+                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read".to_string())
             );
         } else {
             panic!();
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Setup);
-        assert_eq!(cell.phase_properly(), Phase::Setup);
+        assert_eq!(cell.phase_relaxed(), Phase::Setup);
+        assert_eq!(cell.phase(), Phase::Setup);
     }
 
     #[tokio::test]
-    async fn fail_to_read_properly_if_phase_is_cleanup() {
+    async fn fail_to_read_if_phase_is_cleanup() {
         let cell = PhasedCellAsync::new(MyStruct::new());
-        assert_eq!(cell.phase_fast(), Phase::Setup);
+        assert_eq!(cell.phase_relaxed(), Phase::Setup);
 
         if let Err(e) = cell
             .transition_to_cleanup_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
@@ -797,18 +797,18 @@ mod tests_of_phased_cell_async {
             panic!("{e:?}");
         }
 
-        if let Err(e) = cell.read_properly() {
+        if let Err(e) = cell.read() {
             assert_eq!(e.phase, Phase::Cleanup);
             assert_eq!(
                 e.kind,
-                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read_properly".to_string())
+                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read".to_string())
             );
         } else {
             panic!();
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_properly(), Phase::Cleanup);
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
     }
 
     #[tokio::test]
@@ -833,8 +833,8 @@ mod tests_of_phased_cell_async {
             panic!();
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Read);
-        assert_eq!(cell.phase_properly(), Phase::Read);
+        assert_eq!(cell.phase_relaxed(), Phase::Read);
+        assert_eq!(cell.phase(), Phase::Read);
     }
 
     #[tokio::test]
@@ -859,8 +859,8 @@ mod tests_of_phased_cell_async {
             panic!();
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Read);
-        assert_eq!(cell.phase_properly(), Phase::Read);
+        assert_eq!(cell.phase_relaxed(), Phase::Read);
+        assert_eq!(cell.phase(), Phase::Read);
     }
 
     #[tokio::test]
@@ -892,8 +892,8 @@ mod tests_of_phased_cell_async {
             panic!();
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_properly(), Phase::Cleanup);
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
     }
 
     #[tokio::test]
@@ -932,8 +932,8 @@ mod tests_of_phased_cell_async {
             let _result = join_handlers.remove(0).await;
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Read);
-        assert_eq!(cell.phase_properly(), Phase::Read);
+        assert_eq!(cell.phase_relaxed(), Phase::Read);
+        assert_eq!(cell.phase(), Phase::Read);
     }
 
     #[tokio::test]
@@ -972,8 +972,8 @@ mod tests_of_phased_cell_async {
             let _result = join_handlers.remove(0).await;
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_properly(), Phase::Cleanup);
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
     }
 
     #[tokio::test]
@@ -1019,8 +1019,8 @@ mod tests_of_phased_cell_async {
             let _result = join_handlers.remove(0).await;
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_properly(), Phase::Cleanup);
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
     }
 
     #[tokio::test]
@@ -1046,8 +1046,8 @@ mod tests_of_phased_cell_async {
             }
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Setup);
-        assert_eq!(cell.phase_properly(), Phase::Setup);
+        assert_eq!(cell.phase_relaxed(), Phase::Setup);
+        assert_eq!(cell.phase(), Phase::Setup);
     }
 
     #[tokio::test]
@@ -1081,8 +1081,8 @@ mod tests_of_phased_cell_async {
             let _result = join_handlers.remove(0).await;
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Read);
-        assert_eq!(cell.phase_properly(), Phase::Read);
+        assert_eq!(cell.phase_relaxed(), Phase::Read);
+        assert_eq!(cell.phase(), Phase::Read);
     }
 
     #[tokio::test]
@@ -1129,8 +1129,8 @@ mod tests_of_phased_cell_async {
             let _result = join_handlers.remove(0).await;
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_properly(), Phase::Cleanup);
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
     }
 
     #[tokio::test]
@@ -1176,8 +1176,8 @@ mod tests_of_phased_cell_async {
             let _result = join_handlers.remove(0).await;
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Read);
-        assert_eq!(cell.phase_properly(), Phase::Read);
+        assert_eq!(cell.phase_relaxed(), Phase::Read);
+        assert_eq!(cell.phase(), Phase::Read);
     }
 
     #[tokio::test]
@@ -1223,8 +1223,8 @@ mod tests_of_phased_cell_async {
             let _result = join_handlers.remove(0).await;
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_properly(), Phase::Cleanup);
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
     }
 
     #[tokio::test]
@@ -1277,14 +1277,14 @@ mod tests_of_phased_cell_async {
             let _result = join_handlers.remove(0).await;
         }
 
-        assert_eq!(cell.phase_fast(), Phase::Cleanup);
-        assert_eq!(cell.phase_properly(), Phase::Cleanup);
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
     }
 
     #[tokio::test]
     async fn fail_to_transition_to_cleanup_from_setup_because_of_failure_of_closure() {
         let cell = PhasedCellAsync::new(MyStruct::new());
-        assert_eq!(cell.phase_properly(), Phase::Setup);
+        assert_eq!(cell.phase(), Phase::Setup);
 
         if let Err(e) = cell
             .transition_to_cleanup_async(|_data| Box::pin(async { Err(MyError {}) }))
@@ -1294,13 +1294,13 @@ mod tests_of_phased_cell_async {
         } else {
             panic!();
         }
-        assert_eq!(cell.phase_properly(), Phase::Setup);
+        assert_eq!(cell.phase(), Phase::Setup);
     }
 
     #[tokio::test]
     async fn fail_to_transition_to_cleanup_from_read_because_of_failure_of_closure() {
         let cell = PhasedCellAsync::new(MyStruct::new());
-        assert_eq!(cell.phase_properly(), Phase::Setup);
+        assert_eq!(cell.phase(), Phase::Setup);
 
         if let Err(e) = cell
             .transition_to_read_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
@@ -1308,7 +1308,7 @@ mod tests_of_phased_cell_async {
         {
             panic!("{e:?}");
         }
-        assert_eq!(cell.phase_properly(), Phase::Read);
+        assert_eq!(cell.phase(), Phase::Read);
 
         if let Err(e) = cell
             .transition_to_cleanup_async(|_data| Box::pin(async { Err(MyError {}) }))
@@ -1318,6 +1318,6 @@ mod tests_of_phased_cell_async {
         } else {
             panic!();
         }
-        assert_eq!(cell.phase_properly(), Phase::Read);
+        assert_eq!(cell.phase(), Phase::Read);
     }
 }
