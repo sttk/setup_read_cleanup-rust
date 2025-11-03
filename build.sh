@@ -18,12 +18,12 @@ format() {
 }
 
 lint() {
-  cargo clippy
+  cargo clippy --all-features
   errcheck $?
 }
 
 compile() {
-  cargo build
+  cargo build --all-features 
   errcheck $?
 }
 
@@ -52,7 +52,7 @@ bench() {
 }
 
 doc() {
-  cargo doc
+  cargo doc --all-features
   errcheck $?
 }
 

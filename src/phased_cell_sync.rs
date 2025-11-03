@@ -102,6 +102,23 @@ impl<T: Send + Sync> PhasedCellSync<T> {
         F: FnMut(&mut T) -> Result<(), E>,
         E: error::Error + Send + Sync + 'static,
     {
+        self._transition_to_cleanup(|data, phase_cd| {
+            if let Err(e) = f(data) {
+                Err(PhasedError::with_source(
+                    u8_to_phase(phase_cd),
+                    PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
+                    e,
+                ))
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    pub(crate) fn _transition_to_cleanup<F>(&self, mut f: F) -> Result<(), PhasedError>
+    where
+        F: FnMut(&mut T, u8) -> Result<(), PhasedError>,
+    {
         match self.phase.fetch_update(
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
@@ -115,24 +132,17 @@ impl<T: Send + Sync> PhasedCellSync<T> {
                 Ok(mut guard) => {
                     let data_opt = unsafe { &mut *self.data_cell.get() };
                     if data_opt.is_some() {
-                        if let Err(e) = f(data_opt.as_mut().unwrap()) {
-                            self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
-                            Err(PhasedError::with_source(
-                                u8_to_phase(PHASE_READ_TO_CLEANUP),
-                                PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
-                                e,
-                            ))
-                        } else {
-                            unsafe {
-                                core::ptr::swap(data_opt, &mut *guard);
-                            }
-                            self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
-                            Ok(())
+                        let result = f(data_opt.as_mut().unwrap(), PHASE_READ_TO_CLEANUP);
+                        unsafe {
+                            core::ptr::swap(data_opt, &mut *guard);
                         }
+                        self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
+                        result
                     } else {
+                        // impossible case
                         self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
                         Err(PhasedError::new(
-                            u8_to_phase(PHASE_READ),
+                            u8_to_phase(PHASE_SETUP_TO_READ),
                             PhasedErrorKind::InternalDataUnavailable,
                         ))
                     }
@@ -148,18 +158,11 @@ impl<T: Send + Sync> PhasedCellSync<T> {
             Ok(PHASE_SETUP) => match self.data_mutex.lock() {
                 Ok(mut data_opt) => {
                     if data_opt.is_some() {
-                        if let Err(e) = f(data_opt.as_mut().unwrap()) {
-                            self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
-                            Err(PhasedError::with_source(
-                                u8_to_phase(PHASE_SETUP_TO_CLEANUP),
-                                PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
-                                e,
-                            ))
-                        } else {
-                            self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
-                            Ok(())
-                        }
+                        let result = f(data_opt.as_mut().unwrap(), PHASE_SETUP_TO_CLEANUP);
+                        self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
+                        result
                     } else {
+                        // impossible case
                         self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
                         Err(PhasedError::new(
                             u8_to_phase(PHASE_SETUP_TO_CLEANUP),
@@ -220,6 +223,7 @@ impl<T: Send + Sync> PhasedCellSync<T> {
                             Ok(())
                         }
                     } else {
+                        // impossible case
                         self.change_phase(PHASE_SETUP_TO_READ, old_phase_cd);
                         Err(PhasedError::new(
                             u8_to_phase(PHASE_SETUP_TO_READ),
@@ -312,8 +316,8 @@ impl<T: Send + Sync> PhasedCellSync<T> {
 mod tests_of_phased_cell_sync {
     use super::*;
     use std::error::Error;
-    use std::fmt;
     use std::sync::Arc;
+    use std::{fmt, time};
 
     #[derive(Debug)]
     struct MyStruct {
@@ -553,7 +557,7 @@ mod tests_of_phased_cell_sync {
             let handler = std::thread::spawn(move || {
                 let data = cell_clone.read_relaxed().unwrap();
                 assert_eq!(data.vec.as_slice().join(", "), "Hello, World");
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                std::thread::sleep(time::Duration::from_secs(1));
                 counter_clone.fetch_add(1, atomic::Ordering::Release);
                 //println!("{}. {}", _i, data.vec.as_slice().join(", "));
             });
@@ -782,7 +786,7 @@ mod tests_of_phased_cell_sync {
         let cell_clone = Arc::clone(&cell);
         let handler = std::thread::spawn(move || {
             if let Err(e) = cell_clone.transition_to_read(|_data| {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                std::thread::sleep(time::Duration::from_secs(1));
                 Ok::<(), MyError>(())
             }) {
                 panic!("{e:?}");
@@ -790,7 +794,7 @@ mod tests_of_phased_cell_sync {
         });
         join_handlers.push(handler);
 
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(time::Duration::from_millis(100));
 
         if let Err(e) = cell.lock() {
             assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToRead);
@@ -817,7 +821,7 @@ mod tests_of_phased_cell_sync {
         let cell_clone = Arc::clone(&cell);
         let handler = std::thread::spawn(move || {
             if let Err(e) = cell_clone.transition_to_cleanup(|_data| {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                std::thread::sleep(time::Duration::from_secs(1));
                 Ok::<(), MyError>(())
             }) {
                 panic!("{e:?}");
@@ -825,7 +829,7 @@ mod tests_of_phased_cell_sync {
         });
         join_handlers.push(handler);
 
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(time::Duration::from_millis(100));
 
         if let Err(e) = cell.lock() {
             assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
@@ -856,7 +860,7 @@ mod tests_of_phased_cell_sync {
         let cell_clone = Arc::clone(&cell);
         let handler = std::thread::spawn(move || {
             if let Err(e) = cell_clone.transition_to_cleanup(|_data| {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                std::thread::sleep(time::Duration::from_secs(1));
                 Ok::<(), MyError>(())
             }) {
                 panic!("{e:?}");
@@ -864,7 +868,7 @@ mod tests_of_phased_cell_sync {
         });
         join_handlers.push(handler);
 
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(time::Duration::from_millis(100));
 
         if let Err(e) = cell.lock() {
             assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
@@ -885,7 +889,7 @@ mod tests_of_phased_cell_sync {
         let cell = PhasedCellSync::new(MyStruct::new());
 
         if let Err(e) = cell.transition_to_read(|_data| {
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::thread::sleep(time::Duration::from_secs(1));
             Err(MyError {})
         }) {
             match e.kind {
@@ -913,7 +917,7 @@ mod tests_of_phased_cell_sync {
             let cell_clone = Arc::clone(&cell);
             let handler = std::thread::spawn(move || {
                 if let Err(e) = cell_clone.transition_to_read(|_data| {
-                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    std::thread::sleep(time::Duration::from_secs(1));
                     Ok::<(), MyError>(())
                 }) {
                     match e.kind {
@@ -943,7 +947,7 @@ mod tests_of_phased_cell_sync {
         let cell_clone = Arc::clone(&cell);
         let handler = std::thread::spawn(move || {
             if let Err(e) = cell_clone.transition_to_cleanup(|_data| {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                std::thread::sleep(time::Duration::from_secs(2));
                 Ok::<(), MyError>(())
             }) {
                 panic!("{e:?}");
@@ -983,7 +987,7 @@ mod tests_of_phased_cell_sync {
         let cell_clone = Arc::clone(&cell);
         let handler = std::thread::spawn(move || {
             if let Err(e) = cell_clone.transition_to_read(|_data| {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                std::thread::sleep(time::Duration::from_secs(1));
                 Ok::<(), MyError>(())
             }) {
                 panic!("{e:?}");
@@ -991,7 +995,7 @@ mod tests_of_phased_cell_sync {
         });
         join_handlers.push(handler);
 
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(time::Duration::from_millis(100));
 
         let cell_clone = Arc::clone(&cell);
         let handler = std::thread::spawn(move || {
@@ -1022,7 +1026,7 @@ mod tests_of_phased_cell_sync {
         let cell_clone = Arc::clone(&cell);
         let handler = std::thread::spawn(move || {
             if let Err(e) = cell_clone.transition_to_cleanup(|_data| {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                std::thread::sleep(time::Duration::from_secs(1));
                 Ok::<(), MyError>(())
             }) {
                 panic!("{e:?}");
@@ -1030,7 +1034,7 @@ mod tests_of_phased_cell_sync {
         });
         join_handlers.push(handler);
 
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(time::Duration::from_millis(100));
 
         let cell_clone = Arc::clone(&cell);
         let handler = std::thread::spawn(move || {
@@ -1065,7 +1069,7 @@ mod tests_of_phased_cell_sync {
         let cell_clone = Arc::clone(&cell);
         let handler = std::thread::spawn(move || {
             if let Err(e) = cell_clone.transition_to_cleanup(|_data| {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                std::thread::sleep(time::Duration::from_secs(1));
                 Ok::<(), MyError>(())
             }) {
                 panic!("{e:?}");
@@ -1073,7 +1077,7 @@ mod tests_of_phased_cell_sync {
         });
         join_handlers.push(handler);
 
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(time::Duration::from_millis(100));
 
         let cell_clone = Arc::clone(&cell);
         let handler = std::thread::spawn(move || {

@@ -10,6 +10,9 @@ mod phased_cell_sync;
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 mod phased_cell_async;
 
+#[cfg(feature = "setup_read_cleanup-graceful")]
+pub mod graceful;
+
 use std::{cell, error, marker, sync::atomic};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -32,6 +35,9 @@ pub enum PhasedErrorKind {
     FailToRunClosureDuringTransitionToRead,
     FailToRunClosureDuringTransitionToCleanup,
     StdMutexIsPoisoned,
+
+    #[cfg(feature = "setup_read_cleanup-graceful")]
+    GracefulWaitTimeout(std::time::Duration),
 }
 
 pub struct PhasedError {
