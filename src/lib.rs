@@ -6,9 +6,13 @@ mod errors;
 mod phase;
 mod phased_cell;
 mod phased_cell_sync;
+mod wait_sync;
 
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 mod phased_cell_async;
+
+#[cfg(feature = "setup_read_cleanup-on-tokio")]
+mod wait_async;
 
 use std::{cell, error, marker, sync::atomic};
 
@@ -70,4 +74,26 @@ pub struct PhasedCellAsync<T: Send + Sync> {
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 pub struct TokioMutexGuard<'mutex, T> {
     inner: tokio::sync::MutexGuard<'mutex, Option<T>>,
+}
+
+pub struct GracefulWaitSync {
+    counter: atomic::AtomicUsize,
+    blocker: std::sync::Mutex<bool>,
+    condvar: std::sync::Condvar,
+}
+
+#[cfg(feature = "setup_read_cleanup-on-tokio")]
+pub struct GracefulWaitAsync {
+    counter: atomic::AtomicUsize,
+    notify: tokio::sync::Notify,
+}
+
+pub struct GracefulWaitError {
+    pub kind: GracefulWaitErrorKind,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum GracefulWaitErrorKind {
+    TimedOut(std::time::Duration),
+    MutexIsPoisoned,
 }
