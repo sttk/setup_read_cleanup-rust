@@ -119,7 +119,7 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
                 let data_opt = unsafe { &mut *self.data_cell.get() };
                 if data_opt.is_some() {
                     if let Err(e) = f(data_opt.as_mut().unwrap()).await {
-                        self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_READ);
+                        self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
                         Err(PhasedError::with_source(
                             u8_to_phase(PHASE_READ_TO_CLEANUP),
                             PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
@@ -133,7 +133,7 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
                         Ok(())
                     }
                 } else {
-                    self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_READ);
+                    self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
                     Err(PhasedError::new(
                         u8_to_phase(PHASE_READ),
                         PhasedErrorKind::InternalDataUnavailable,
@@ -144,7 +144,7 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
                 let mut data_opt = self.data_mutex.lock().await;
                 if data_opt.is_some() {
                     if let Err(e) = f(data_opt.as_mut().unwrap()).await {
-                        self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_SETUP);
+                        self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
                         Err(PhasedError::with_source(
                             u8_to_phase(PHASE_SETUP_TO_CLEANUP),
                             PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
@@ -155,7 +155,7 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
                         Ok(())
                     }
                 } else {
-                    self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_SETUP);
+                    self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
                     Err(PhasedError::new(
                         u8_to_phase(PHASE_SETUP_TO_CLEANUP),
                         PhasedErrorKind::InternalDataUnavailable,
@@ -166,17 +166,13 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
                 u8_to_phase(PHASE_CLEANUP),
                 PhasedErrorKind::PhaseIsAlreadyCleanup,
             )),
-            Err(PHASE_READ_TO_CLEANUP) => Err(PhasedError::new(
-                u8_to_phase(PHASE_READ_TO_CLEANUP),
-                PhasedErrorKind::DuringTransitionToCleanup,
-            )),
-            Err(PHASE_SETUP_TO_CLEANUP) => Err(PhasedError::new(
-                u8_to_phase(PHASE_SETUP_TO_CLEANUP),
-                PhasedErrorKind::DuringTransitionToCleanup,
+            Err(PHASE_SETUP_TO_READ) => Err(PhasedError::new(
+                u8_to_phase(PHASE_SETUP_TO_READ),
+                PhasedErrorKind::DuringTransitionToRead,
             )),
             Err(old_phase_cd) => Err(PhasedError::new(
                 u8_to_phase(old_phase_cd),
-                PhasedErrorKind::TransitionToCleanupFailed,
+                PhasedErrorKind::DuringTransitionToCleanup,
             )),
             Ok(_) => Ok(()), // impossible case.
         }
@@ -222,13 +218,17 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
                 u8_to_phase(PHASE_READ),
                 PhasedErrorKind::PhaseIsAlreadyRead,
             )),
+            Err(PHASE_CLEANUP) => Err(PhasedError::new(
+                u8_to_phase(PHASE_CLEANUP),
+                PhasedErrorKind::PhaseIsAlreadyCleanup,
+            )),
             Err(PHASE_SETUP_TO_READ) => Err(PhasedError::new(
                 u8_to_phase(PHASE_SETUP_TO_READ),
                 PhasedErrorKind::DuringTransitionToRead,
             )),
             Err(old_phase_cd) => Err(PhasedError::new(
                 u8_to_phase(old_phase_cd),
-                PhasedErrorKind::TransitionToReadFailed,
+                PhasedErrorKind::DuringTransitionToCleanup,
             )),
         }
     }
@@ -887,7 +887,7 @@ mod tests_of_phased_cell_async {
             .await
         {
             assert_eq!(e.phase, Phase::Cleanup);
-            assert_eq!(e.kind, PhasedErrorKind::TransitionToReadFailed);
+            assert_eq!(e.kind, PhasedErrorKind::PhaseIsAlreadyCleanup);
         } else {
             panic!();
         }
@@ -1116,7 +1116,7 @@ mod tests_of_phased_cell_async {
                 .await
             {
                 match e.kind {
-                    PhasedErrorKind::TransitionToReadFailed => {}
+                    PhasedErrorKind::DuringTransitionToCleanup => {}
                     _ => panic!("{e:?}"),
                 }
             } else {
@@ -1165,7 +1165,7 @@ mod tests_of_phased_cell_async {
                 .transition_to_cleanup_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
                 .await
             {
-                assert_eq!(e.kind, PhasedErrorKind::TransitionToCleanupFailed);
+                assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToRead);
             } else {
                 panic!();
             }
@@ -1282,7 +1282,7 @@ mod tests_of_phased_cell_async {
     }
 
     #[tokio::test]
-    async fn fail_to_transition_to_cleanup_from_setup_because_of_failure_of_closure() {
+    async fn transition_to_cleanup_from_setup_but_closure_failed() {
         let cell = PhasedCellAsync::new(MyStruct::new());
         assert_eq!(cell.phase(), Phase::Setup);
 
@@ -1294,11 +1294,11 @@ mod tests_of_phased_cell_async {
         } else {
             panic!();
         }
-        assert_eq!(cell.phase(), Phase::Setup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
     }
 
     #[tokio::test]
-    async fn fail_to_transition_to_cleanup_from_read_because_of_failure_of_closure() {
+    async fn transition_to_cleanup_from_read_but_closure_failed() {
         let cell = PhasedCellAsync::new(MyStruct::new());
         assert_eq!(cell.phase(), Phase::Setup);
 
@@ -1318,6 +1318,6 @@ mod tests_of_phased_cell_async {
         } else {
             panic!();
         }
-        assert_eq!(cell.phase(), Phase::Read);
+        assert_eq!(cell.phase(), Phase::Cleanup);
     }
 }

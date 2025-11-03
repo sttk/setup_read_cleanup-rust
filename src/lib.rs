@@ -29,8 +29,6 @@ pub enum PhasedErrorKind {
     PhaseIsAlreadyCleanup,
     DuringTransitionToRead,
     DuringTransitionToCleanup,
-    TransitionToReadFailed,
-    TransitionToCleanupFailed,
     FailToRunClosureDuringTransitionToRead,
     FailToRunClosureDuringTransitionToCleanup,
     StdMutexIsPoisoned,
