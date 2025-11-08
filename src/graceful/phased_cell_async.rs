@@ -2,288 +2,113 @@
 // This program is free software under MIT License.
 // See the file LICENSE in this distribution for more details.
 
+use super::{GracefulPhasedCellAsync, GracefulWaitAsync, GracefulWaitErrorKind};
 use crate::phase::*;
 use crate::{Phase, PhasedCellAsync, PhasedError, PhasedErrorKind, TokioMutexGuard};
 
 use std::future::Future;
-use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::{any, cell, error, marker, sync::atomic};
-use tokio::sync;
+use std::sync::{atomic, Arc};
+use std::{cell, error};
+use tokio::time;
 
-impl<'mutex, T> TokioMutexGuard<'mutex, T> {
-    pub fn try_new(guarded_option: sync::MutexGuard<'mutex, Option<T>>) -> Option<Self> {
-        if guarded_option.is_some() {
-            Some(Self {
-                inner: guarded_option,
-            })
-        } else {
-            None
-        }
-    }
-}
+unsafe impl<T: Send + Sync> Sync for GracefulPhasedCellAsync<T> {}
+unsafe impl<T: Send + Sync> Send for GracefulPhasedCellAsync<T> {}
 
-impl<'mutex, T> Deref for TokioMutexGuard<'mutex, T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        // unwrap() here is always safe because it's guaranteed to be Some in the constructor.
-        self.inner.as_ref().unwrap()
-    }
-}
-
-impl<'mutex, T> DerefMut for TokioMutexGuard<'mutex, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        // unwrap() here is always safe because it's guaranteed to be Some in the constructor.
-        self.inner.as_mut().unwrap()
-    }
-}
-
-unsafe impl<T: Send + Sync> Sync for PhasedCellAsync<T> {}
-unsafe impl<T: Send + Sync> Send for PhasedCellAsync<T> {}
-
-impl<T: Send + Sync> PhasedCellAsync<T> {
+impl<T: Send + Sync> GracefulPhasedCellAsync<T> {
     pub const fn new(data: T) -> Self {
         Self {
-            phase: atomic::AtomicU8::new(PHASE_SETUP),
-            data_mutex: sync::Mutex::<Option<T>>::const_new(Some(data)),
-            data_cell: cell::UnsafeCell::<Option<T>>::new(None),
-            _marker: marker::PhantomData,
+            cell: PhasedCellAsync::new(data),
+            wait: cell::LazyCell::new(|| Arc::new(GracefulWaitAsync::new())),
         }
     }
 
     pub fn phase_relaxed(&self) -> Phase {
-        let phase = self.phase.load(atomic::Ordering::Relaxed);
-        u8_to_phase(phase)
+        self.cell.phase_relaxed()
     }
 
     pub fn phase(&self) -> Phase {
-        let phase = self.phase.load(atomic::Ordering::Acquire);
-        u8_to_phase(phase)
+        self.cell.phase()
     }
 
     pub fn read_relaxed(&self) -> Result<&T, PhasedError> {
-        let phase = self.phase.load(atomic::Ordering::Relaxed);
-        if phase != PHASE_READ {
-            return Err(PhasedError::new(
-                u8_to_phase(phase),
-                PhasedErrorKind::CannotCallUnlessPhaseRead(Self::method_name("read_relaxed")),
-            ));
-        }
-
-        if let Some(data) = unsafe { &*self.data_cell.get() }.as_ref() {
-            Ok(data)
-        } else {
-            Err(PhasedError::new(
-                u8_to_phase(phase),
-                PhasedErrorKind::InternalDataUnavailable,
-            ))
+        match self.cell.read_relaxed() {
+            Ok(data) => {
+                self.wait.count_up();
+                Ok(data)
+            }
+            Err(e) => Err(e),
         }
     }
 
     pub fn read(&self) -> Result<&T, PhasedError> {
-        let phase = self.phase.load(atomic::Ordering::Acquire);
-        if phase != PHASE_READ {
-            return Err(PhasedError::new(
-                u8_to_phase(phase),
-                PhasedErrorKind::CannotCallUnlessPhaseRead(Self::method_name("read")),
-            ));
-        }
-
-        if let Some(data) = unsafe { &*self.data_cell.get() }.as_ref() {
-            Ok(data)
-        } else {
-            Err(PhasedError::new(
-                u8_to_phase(phase),
-                PhasedErrorKind::InternalDataUnavailable,
-            ))
+        match self.cell.read() {
+            Ok(data) => {
+                self.wait.count_up();
+                Ok(data)
+            }
+            Err(e) => Err(e),
         }
     }
 
-    pub async fn transition_to_cleanup_async<F, E>(&self, mut f: F) -> Result<(), PhasedError>
+    pub fn finish_reading(&self) {
+        self.wait.count_down(|| {
+            self.cell.phase.load(atomic::Ordering::Acquire) == PHASE_READ_TO_CLEANUP
+        });
+    }
+
+    pub async fn transition_to_cleanup_async<F, E>(
+        &self,
+        timeout: time::Duration,
+        mut f: F,
+    ) -> Result<(), PhasedError>
     where
         F: FnMut(&mut T) -> Pin<Box<dyn Future<Output = Result<(), E>> + Send>>,
         E: error::Error + Send + Sync + 'static,
     {
-        self._transition_to_cleanup_async(|data, phase_cd| {
-            let fut = f(data);
-            Box::pin(async move {
-                if let Err(e) = fut.await {
-                    Err(PhasedError::with_source(
-                        u8_to_phase(phase_cd),
-                        PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
-                        e,
-                    ))
-                } else {
-                    Ok(())
-                }
-            })
-        })
-        .await
-    }
-
-    pub(crate) async fn _transition_to_cleanup_async<F>(&self, mut f: F) -> Result<(), PhasedError>
-    where
-        F: FnMut(&mut T, u8) -> Pin<Box<dyn Future<Output = Result<(), PhasedError>> + Send>>,
-    {
-        match self.phase.fetch_update(
-            atomic::Ordering::AcqRel,
-            atomic::Ordering::Acquire,
-            |current_phase| match current_phase {
-                PHASE_SETUP => Some(PHASE_SETUP_TO_CLEANUP),
-                PHASE_READ => Some(PHASE_READ_TO_CLEANUP),
-                _ => None,
-            },
-        ) {
-            Ok(PHASE_READ) => {
-                let mut guard = self.data_mutex.lock().await;
-                let data_opt = unsafe { &mut *self.data_cell.get() };
-                if data_opt.is_some() {
-                    let result = f(data_opt.as_mut().unwrap(), PHASE_READ_TO_CLEANUP).await;
-                    unsafe {
-                        core::ptr::swap(data_opt, &mut *guard);
-                    }
-                    self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
-                    result
-                } else {
-                    self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
-                    Err(PhasedError::new(
-                        u8_to_phase(PHASE_READ),
-                        PhasedErrorKind::InternalDataUnavailable,
-                    ))
-                }
-            }
-            Ok(PHASE_SETUP) => {
-                let mut data_opt = self.data_mutex.lock().await;
-                if data_opt.is_some() {
-                    let result = f(data_opt.as_mut().unwrap(), PHASE_SETUP_TO_CLEANUP).await;
-                    self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
-                    result
-                } else {
-                    self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
-                    Err(PhasedError::new(
-                        u8_to_phase(PHASE_SETUP_TO_CLEANUP),
-                        PhasedErrorKind::InternalDataUnavailable,
-                    ))
-                }
-            }
-            Err(PHASE_CLEANUP) => Err(PhasedError::new(
-                u8_to_phase(PHASE_CLEANUP),
-                PhasedErrorKind::PhaseIsAlreadyCleanup,
-            )),
-            Err(PHASE_SETUP_TO_READ) => Err(PhasedError::new(
-                u8_to_phase(PHASE_SETUP_TO_READ),
-                PhasedErrorKind::DuringTransitionToRead,
-            )),
-            Err(old_phase_cd) => Err(PhasedError::new(
-                u8_to_phase(old_phase_cd),
-                PhasedErrorKind::DuringTransitionToCleanup,
-            )),
-            Ok(_) => Ok(()), // impossible case.
-        }
-    }
-
-    pub async fn transition_to_read_async<F, E>(&self, mut f: F) -> Result<(), PhasedError>
-    where
-        F: FnMut(&mut T) -> Pin<Box<dyn Future<Output = Result<(), E>> + Send>>,
-        E: error::Error + Send + Sync + 'static,
-    {
-        match self.phase.compare_exchange(
-            PHASE_SETUP,
-            PHASE_SETUP_TO_READ,
-            atomic::Ordering::AcqRel,
-            atomic::Ordering::Acquire,
-        ) {
-            Ok(old_phase_cd) => {
-                let mut data_opt = self.data_mutex.lock().await;
-                if data_opt.is_some() {
-                    if let Err(e) = f(data_opt.as_mut().unwrap()).await {
-                        self.change_phase(PHASE_SETUP_TO_READ, old_phase_cd);
-                        Err(PhasedError::with_source(
-                            u8_to_phase(PHASE_SETUP_TO_READ),
-                            PhasedErrorKind::FailToRunClosureDuringTransitionToRead,
+        let timeout_copy = timeout;
+        self.cell
+            ._transition_to_cleanup_async(|data, phase_cd| {
+                let f_fut = f(data);
+                let wait_clone = self.wait.clone();
+                Box::pin(async move {
+                    let result = wait_clone.wait_gracefully_async(timeout_copy).await;
+                    if let Err(e) = f_fut.await {
+                        return Err(PhasedError::with_source(
+                            u8_to_phase(phase_cd),
+                            PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
                             e,
-                        ))
-                    } else {
-                        unsafe {
-                            core::ptr::swap(self.data_cell.get(), &mut *data_opt);
+                        ));
+                    }
+                    if let Err(e) = result {
+                        match e.kind {
+                            GracefulWaitErrorKind::TimedOut(_) => Err(PhasedError::new(
+                                u8_to_phase(phase_cd),
+                                PhasedErrorKind::GracefulWaitTimeout(timeout),
+                            )),
+                            GracefulWaitErrorKind::MutexIsPoisoned => Err(PhasedError::new(
+                                u8_to_phase(phase_cd),
+                                PhasedErrorKind::StdMutexIsPoisoned,
+                            )),
                         }
-                        self.change_phase(PHASE_SETUP_TO_READ, PHASE_READ);
+                    } else {
                         Ok(())
                     }
-                } else {
-                    self.change_phase(PHASE_SETUP_TO_READ, old_phase_cd);
-                    Err(PhasedError::new(
-                        u8_to_phase(PHASE_SETUP_TO_READ),
-                        PhasedErrorKind::InternalDataUnavailable,
-                    ))
-                }
-            }
-            Err(PHASE_READ) => Err(PhasedError::new(
-                u8_to_phase(PHASE_READ),
-                PhasedErrorKind::PhaseIsAlreadyRead,
-            )),
-            Err(PHASE_CLEANUP) => Err(PhasedError::new(
-                u8_to_phase(PHASE_CLEANUP),
-                PhasedErrorKind::PhaseIsAlreadyCleanup,
-            )),
-            Err(PHASE_SETUP_TO_READ) => Err(PhasedError::new(
-                u8_to_phase(PHASE_SETUP_TO_READ),
-                PhasedErrorKind::DuringTransitionToRead,
-            )),
-            Err(old_phase_cd) => Err(PhasedError::new(
-                u8_to_phase(old_phase_cd),
-                PhasedErrorKind::DuringTransitionToCleanup,
-            )),
-        }
+                })
+            })
+            .await
+    }
+
+    pub async fn transition_to_read_async<F, E>(&self, f: F) -> Result<(), PhasedError>
+    where
+        F: FnMut(&mut T) -> Pin<Box<dyn Future<Output = Result<(), E>> + Send>>,
+        E: error::Error + Send + Sync + 'static,
+    {
+        self.cell.transition_to_read_async(f).await
     }
 
     pub async fn lock_async(&self) -> Result<TokioMutexGuard<'_, T>, PhasedError> {
-        let phase = self.phase.load(atomic::Ordering::Acquire);
-        match phase {
-            PHASE_READ => Err(PhasedError::new(
-                u8_to_phase(PHASE_READ),
-                PhasedErrorKind::CannotCallOnPhaseRead(Self::method_name("lock_async")),
-            )),
-            PHASE_SETUP_TO_READ => Err(PhasedError::new(
-                u8_to_phase(PHASE_SETUP_TO_READ),
-                PhasedErrorKind::DuringTransitionToRead,
-            )),
-            PHASE_SETUP_TO_CLEANUP => Err(PhasedError::new(
-                u8_to_phase(PHASE_SETUP_TO_CLEANUP),
-                PhasedErrorKind::DuringTransitionToCleanup,
-            )),
-            PHASE_READ_TO_CLEANUP => Err(PhasedError::new(
-                u8_to_phase(PHASE_READ_TO_CLEANUP),
-                PhasedErrorKind::DuringTransitionToCleanup,
-            )),
-            _ => {
-                let guarded_opt = self.data_mutex.lock().await;
-                if let Some(new_guard) = TokioMutexGuard::try_new(guarded_opt) {
-                    Ok(new_guard)
-                } else {
-                    Err(PhasedError::new(
-                        u8_to_phase(phase),
-                        PhasedErrorKind::InternalDataUnavailable,
-                    ))
-                }
-            }
-        }
-    }
-
-    #[inline]
-    fn method_name(m: &str) -> String {
-        format!("{}::{}", any::type_name::<PhasedCellAsync<T>>(), m)
-    }
-
-    #[inline]
-    fn change_phase(&self, current_phase: u8, new_phase: u8) {
-        let _result = self.phase.compare_exchange(
-            current_phase,
-            new_phase,
-            atomic::Ordering::AcqRel,
-            atomic::Ordering::Acquire,
-        );
+        self.cell.lock_async().await
     }
 }
 
@@ -293,7 +118,6 @@ mod tests_of_phased_cell_async {
     use std::error::Error;
     use std::fmt;
     use std::sync::Arc;
-    use tokio::time;
 
     struct MyStruct {
         vec: Vec<String>,
@@ -323,7 +147,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn transition_from_setup_to_read_then_cleanup() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
         assert_eq!(cell.phase_relaxed(), Phase::Setup);
         assert_eq!(cell.phase(), Phase::Setup);
 
@@ -337,7 +161,9 @@ mod tests_of_phased_cell_async {
         assert_eq!(cell.phase(), Phase::Read);
 
         if let Err(e) = cell
-            .transition_to_cleanup_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
+            .transition_to_cleanup_async(time::Duration::ZERO, |_data| {
+                Box::pin(async { Ok::<(), MyError>(()) })
+            })
             .await
         {
             panic!("{e:?}");
@@ -348,12 +174,14 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn transition_from_setup_to_cleanup() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
         assert_eq!(cell.phase_relaxed(), Phase::Setup);
         assert_eq!(cell.phase(), Phase::Setup);
 
         if let Err(e) = cell
-            .transition_to_cleanup_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
+            .transition_to_cleanup_async(time::Duration::ZERO, |_data| {
+                Box::pin(async { Ok::<(), MyError>(()) })
+            })
             .await
         {
             panic!("{e:?}");
@@ -364,7 +192,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn update_internal_data_in_setup_and_cleanup_phases() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
         assert_eq!(cell.phase_relaxed(), Phase::Setup);
         assert_eq!(cell.phase(), Phase::Setup);
 
@@ -436,9 +264,11 @@ mod tests_of_phased_cell_async {
             panic!();
         }
 
+        cell.finish_reading();
+
         // Read -> Cleanup
         if let Err(e) = cell
-            .transition_to_cleanup_async(|data| {
+            .transition_to_cleanup_async(time::Duration::ZERO, |data| {
                 data.add(" ** ".to_string());
                 Box::pin(async { Ok::<(), MyError>(()) })
             })
@@ -474,46 +304,49 @@ mod tests_of_phased_cell_async {
         }
 
         if let Ok(mut data) = cell.lock_async().await {
-            assert_eq!(&data.vec, &[
-              "H".to_string(),
-              "e".to_string(),
-              "l".to_string(),
-              "l".to_string(),
-              "o".to_string(),
-              // --
-              "H".to_string(),
-              "e".to_string(),
-              "l".to_string(),
-              "l".to_string(),
-              "o".to_string(),
-              // --
-              "H".to_string(),
-              "e".to_string(),
-              "l".to_string(),
-              "l".to_string(),
-              "o".to_string(),
-              // --
-              ",".to_string(),
-              " ** ".to_string(),
-              // --
-              "W".to_string(),
-              "o".to_string(),
-              "r".to_string(),
-              "l".to_string(),
-              "d".to_string(),
-              // --
-              "W".to_string(),
-              "o".to_string(),
-              "r".to_string(),
-              "l".to_string(),
-              "d".to_string(),
-              // --
-              "W".to_string(),
-              "o".to_string(),
-              "r".to_string(),
-              "l".to_string(),
-              "d".to_string(),
-            ]);
+            assert_eq!(
+                &data.vec,
+                &[
+                    "H".to_string(),
+                    "e".to_string(),
+                    "l".to_string(),
+                    "l".to_string(),
+                    "o".to_string(),
+                    // --
+                    "H".to_string(),
+                    "e".to_string(),
+                    "l".to_string(),
+                    "l".to_string(),
+                    "o".to_string(),
+                    // --
+                    "H".to_string(),
+                    "e".to_string(),
+                    "l".to_string(),
+                    "l".to_string(),
+                    "o".to_string(),
+                    // --
+                    ",".to_string(),
+                    " ** ".to_string(),
+                    // --
+                    "W".to_string(),
+                    "o".to_string(),
+                    "r".to_string(),
+                    "l".to_string(),
+                    "d".to_string(),
+                    // --
+                    "W".to_string(),
+                    "o".to_string(),
+                    "r".to_string(),
+                    "l".to_string(),
+                    "d".to_string(),
+                    // --
+                    "W".to_string(),
+                    "o".to_string(),
+                    "r".to_string(),
+                    "l".to_string(),
+                    "d".to_string(),
+                ]
+            );
             data.clear();
         } else {
             panic!();
@@ -528,7 +361,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn read_relaxed_internal_data_in_multi_threads() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
 
         match cell.lock_async().await {
             Ok(mut data) => data.add("Hello".to_string()),
@@ -557,6 +390,7 @@ mod tests_of_phased_cell_async {
                 assert_eq!(data.vec.as_slice().join(", "), "Hello, World");
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 counter_clone.fetch_add(1, atomic::Ordering::Release);
+                cell_clone.finish_reading();
                 //println!("{}. {}", _i, data.vec.as_slice().join(", "));
             });
         }
@@ -564,11 +398,8 @@ mod tests_of_phased_cell_async {
 
         // Read -> Cleanup
         if let Err(e) = cell
-            .transition_to_cleanup_async(|_data| {
-                Box::pin(async {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                    Ok::<(), MyError>(())
-                })
+            .transition_to_cleanup_async(time::Duration::from_secs(1), |_data| {
+                Box::pin(async { Ok::<(), MyError>(()) })
             })
             .await
         {
@@ -594,14 +425,14 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_read_relaxed_if_phase_is_setup() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
         assert_eq!(cell.phase_relaxed(), Phase::Setup);
 
         if let Err(e) = cell.read_relaxed() {
             assert_eq!(e.phase, Phase::Setup);
             assert_eq!(
                 e.kind,
-                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read_relaxed".to_string())
+                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::graceful::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read_relaxed".to_string())
             );
         } else {
             panic!();
@@ -620,7 +451,7 @@ mod tests_of_phased_cell_async {
             assert_eq!(e.phase, Phase::Setup);
             assert_eq!(
                 e.kind,
-                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read".to_string())
+                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::graceful::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read".to_string())
             );
         } else {
             panic!();
@@ -632,14 +463,14 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_read_if_phase_is_setup() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
         assert_eq!(cell.phase(), Phase::Setup);
 
         if let Err(e) = cell.read() {
             assert_eq!(e.phase, Phase::Setup);
             assert_eq!(
                 e.kind,
-                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read".to_string())
+                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::graceful::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read".to_string())
             );
         } else {
             panic!();
@@ -651,11 +482,13 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_read_if_phase_is_cleanup() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
         assert_eq!(cell.phase_relaxed(), Phase::Setup);
 
         if let Err(e) = cell
-            .transition_to_cleanup_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
+            .transition_to_cleanup_async(time::Duration::ZERO, |_data| {
+                Box::pin(async { Ok::<(), MyError>(()) })
+            })
             .await
         {
             panic!("{e:?}");
@@ -665,7 +498,7 @@ mod tests_of_phased_cell_async {
             assert_eq!(e.phase, Phase::Cleanup);
             assert_eq!(
                 e.kind,
-                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read".to_string())
+                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::graceful::phased_cell_async::tests_of_phased_cell_async::MyStruct>::read".to_string())
             );
         } else {
             panic!();
@@ -677,7 +510,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_lock_if_phase_is_read() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
 
         // Setup -> Read
         if let Err(e) = cell
@@ -691,7 +524,7 @@ mod tests_of_phased_cell_async {
             assert_eq!(e.phase, Phase::Read);
             assert_eq!(
                 e.kind,
-                PhasedErrorKind::CannotCallOnPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::phased_cell_async::tests_of_phased_cell_async::MyStruct>::lock_async".to_string()),
+                PhasedErrorKind::CannotCallOnPhaseRead("setup_read_cleanup::PhasedCellAsync<setup_read_cleanup::graceful::phased_cell_async::tests_of_phased_cell_async::MyStruct>::lock_async".to_string()),
             );
         } else {
             panic!();
@@ -703,7 +536,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_transition_to_read_if_phase_is_read() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
 
         // Setup -> Read
         if let Err(e) = cell
@@ -729,7 +562,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_transition_to_read_if_phase_is_cleanup() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
 
         // Setup -> Read
         if let Err(e) = cell
@@ -740,7 +573,9 @@ mod tests_of_phased_cell_async {
         }
 
         if let Err(e) = cell
-            .transition_to_cleanup_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
+            .transition_to_cleanup_async(time::Duration::ZERO, |_data| {
+                Box::pin(async { Ok::<(), MyError>(()) })
+            })
             .await
         {
             panic!("{e:?}");
@@ -762,7 +597,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_lock_during_transition_to_read() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
 
         let cell = Arc::new(cell);
 
@@ -802,7 +637,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_lock_during_transition_to_cleanup_from_setup() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
 
         let cell = Arc::new(cell);
 
@@ -811,9 +646,9 @@ mod tests_of_phased_cell_async {
         let cell_clone = Arc::clone(&cell);
         let handler = tokio::task::spawn(async move {
             if let Err(e) = cell_clone
-                .transition_to_cleanup_async(|_data| {
+                .transition_to_cleanup_async(time::Duration::ZERO, |_data| {
                     Box::pin(async {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        tokio::time::sleep(time::Duration::from_secs(1)).await;
                         Ok::<(), MyError>(())
                     })
                 })
@@ -842,7 +677,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_lock_during_transition_to_cleanup_from_read() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
 
         if let Err(e) = cell
             .transition_to_read_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
@@ -858,9 +693,9 @@ mod tests_of_phased_cell_async {
         let cell_clone = Arc::clone(&cell);
         let handler = tokio::task::spawn(async move {
             if let Err(e) = cell_clone
-                .transition_to_cleanup_async(|_data| {
+                .transition_to_cleanup_async(time::Duration::ZERO, |_data| {
                     Box::pin(async {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        tokio::time::sleep(time::Duration::from_secs(1)).await;
                         Ok::<(), MyError>(())
                     })
                 })
@@ -889,7 +724,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_transition_to_read_if_closure_causes_an_error() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
 
         if let Err(e) = cell
             .transition_to_read_async(|_data| {
@@ -916,7 +751,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_transition_to_read_during_transition_to_read() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
 
         let cell = Arc::new(cell);
 
@@ -951,7 +786,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_transition_to_read_during_transition_to_cleanup() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
 
         let cell = Arc::new(cell);
 
@@ -960,7 +795,7 @@ mod tests_of_phased_cell_async {
         let cell_clone = Arc::clone(&cell);
         let handler = tokio::task::spawn(async move {
             if let Err(e) = cell_clone
-                .transition_to_cleanup_async(|_data| {
+                .transition_to_cleanup_async(time::Duration::ZERO, |_data| {
                     Box::pin(async {
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                         Ok::<(), MyError>(())
@@ -999,7 +834,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_transition_to_cleanup_during_transition_to_read() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
 
         let cell = Arc::new(cell);
 
@@ -1026,7 +861,9 @@ mod tests_of_phased_cell_async {
         let cell_clone = Arc::clone(&cell);
         let handler = tokio::task::spawn(async move {
             if let Err(e) = cell_clone
-                .transition_to_cleanup_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
+                .transition_to_cleanup_async(time::Duration::ZERO, |_data| {
+                    Box::pin(async { Ok::<(), MyError>(()) })
+                })
                 .await
             {
                 assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToRead);
@@ -1046,7 +883,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_transition_to_cleanup_during_transition_to_cleanup_from_setup() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
 
         let cell = Arc::new(cell);
 
@@ -1055,7 +892,7 @@ mod tests_of_phased_cell_async {
         let cell_clone = Arc::clone(&cell);
         let handler = tokio::task::spawn(async move {
             if let Err(e) = cell_clone
-                .transition_to_cleanup_async(|_data| {
+                .transition_to_cleanup_async(time::Duration::ZERO, |_data| {
                     Box::pin(async {
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                         Ok::<(), MyError>(())
@@ -1073,7 +910,9 @@ mod tests_of_phased_cell_async {
         let cell_clone = Arc::clone(&cell);
         let handler = tokio::task::spawn(async move {
             if let Err(e) = cell_clone
-                .transition_to_cleanup_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
+                .transition_to_cleanup_async(time::Duration::ZERO, |_data| {
+                    Box::pin(async { Ok::<(), MyError>(()) })
+                })
                 .await
             {
                 assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
@@ -1093,7 +932,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn fail_to_transition_to_cleanup_during_transition_to_cleanup_from_read() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
 
         if let Err(e) = cell
             .transition_to_read_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
@@ -1109,7 +948,7 @@ mod tests_of_phased_cell_async {
         let cell_clone = Arc::clone(&cell);
         let handler = tokio::task::spawn(async move {
             if let Err(e) = cell_clone
-                .transition_to_cleanup_async(|_data| {
+                .transition_to_cleanup_async(time::Duration::ZERO, |_data| {
                     Box::pin(async {
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                         Ok::<(), MyError>(())
@@ -1127,7 +966,9 @@ mod tests_of_phased_cell_async {
         let cell_clone = Arc::clone(&cell);
         let handler = tokio::task::spawn(async move {
             if let Err(e) = cell_clone
-                .transition_to_cleanup_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
+                .transition_to_cleanup_async(time::Duration::ZERO, |_data| {
+                    Box::pin(async { Ok::<(), MyError>(()) })
+                })
                 .await
             {
                 assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
@@ -1147,11 +988,13 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn transition_to_cleanup_from_setup_but_closure_failed() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
         assert_eq!(cell.phase(), Phase::Setup);
 
         if let Err(e) = cell
-            .transition_to_cleanup_async(|_data| Box::pin(async { Err(MyError {}) }))
+            .transition_to_cleanup_async(time::Duration::ZERO, |_data| {
+                Box::pin(async { Err(MyError {}) })
+            })
             .await
         {
             assert_eq!(format!("{:?}", e), "setup_read_cleanup::PhasedError { phase: Cleanup, kind: FailToRunClosureDuringTransitionToCleanup, source: MyError }");
@@ -1163,7 +1006,7 @@ mod tests_of_phased_cell_async {
 
     #[tokio::test]
     async fn transition_to_cleanup_from_read_but_closure_failed() {
-        let cell = PhasedCellAsync::new(MyStruct::new());
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
         assert_eq!(cell.phase(), Phase::Setup);
 
         if let Err(e) = cell
@@ -1175,7 +1018,9 @@ mod tests_of_phased_cell_async {
         assert_eq!(cell.phase(), Phase::Read);
 
         if let Err(e) = cell
-            .transition_to_cleanup_async(|_data| Box::pin(async { Err(MyError {}) }))
+            .transition_to_cleanup_async(time::Duration::ZERO, |_data| {
+                Box::pin(async { Err(MyError {}) })
+            })
             .await
         {
             assert_eq!(format!("{:?}", e), "setup_read_cleanup::PhasedError { phase: Cleanup, kind: FailToRunClosureDuringTransitionToCleanup, source: MyError }");
@@ -1183,5 +1028,151 @@ mod tests_of_phased_cell_async {
             panic!();
         }
         assert_eq!(cell.phase(), Phase::Cleanup);
+    }
+
+    #[tokio::test]
+    async fn transition_to_cleanup_gracefully() {
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
+
+        match cell.lock_async().await {
+            Ok(mut data) => data.add("Hello".to_string()),
+            Err(e) => panic!("{e:?}"),
+        }
+
+        // Setup -> Read
+        if let Err(e) = cell
+            .transition_to_read_async(|data| {
+                data.add("World".to_string());
+                Box::pin(async { Ok::<(), MyError>(()) })
+            })
+            .await
+        {
+            panic!("{e:?}");
+        }
+
+        let counter = Arc::new(atomic::AtomicU8::new(0));
+        let cell = Arc::new(cell);
+
+        let mut join_handlers = Vec::<std::thread::JoinHandle<_>>::new();
+        for _i in 0..10 {
+            let cell_clone = Arc::clone(&cell);
+            let counter_clone = Arc::clone(&counter);
+            let handler = std::thread::spawn(move || {
+                let data = cell_clone.read_relaxed().unwrap();
+                assert_eq!(data.vec.as_slice().join(", "), "Hello, World");
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                counter_clone.fetch_add(1, atomic::Ordering::Release);
+                cell_clone.finish_reading();
+                //println!("{}. {}", _i, data.vec.as_slice().join(", "));
+            });
+            join_handlers.push(handler);
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Read -> Cleanup
+        if let Err(e) = cell
+            .transition_to_cleanup_async(time::Duration::from_secs(5), |data| {
+                assert_eq!(data.vec.as_slice().join(", "), "Hello, World");
+                data.add("!!".to_string());
+                assert_eq!(data.vec.as_slice().join(", "), "Hello, World, !!");
+                Box::pin(async { Ok::<(), MyError>(()) })
+            })
+            .await
+        {
+            panic!("{e:?}");
+        }
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
+
+        if let Ok(mut data) = cell.lock_async().await {
+            assert_eq!(
+                &data.vec,
+                &["Hello".to_string(), "World".to_string(), "!!".to_string()]
+            );
+            data.clear();
+            assert_eq!(&data.vec, &[] as &[String]);
+        } else {
+            panic!();
+        }
+
+        assert_eq!(counter.load(atomic::Ordering::Acquire), 10);
+    }
+
+    #[tokio::test]
+    async fn transition_to_cleanup_gracefully_but_timeout() {
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
+
+        match cell.lock_async().await {
+            Ok(mut data) => data.add("Hello".to_string()),
+            Err(e) => panic!("{e:?}"),
+        }
+
+        // Setup -> Read
+        if let Err(e) = cell
+            .transition_to_read_async(|data| {
+                data.add("World".to_string());
+                Box::pin(async { Ok::<(), MyError>(()) })
+            })
+            .await
+        {
+            panic!("{e:?}");
+        }
+
+        let counter = Arc::new(atomic::AtomicU8::new(0));
+        let cell = Arc::new(cell);
+
+        let mut join_handlers = Vec::<std::thread::JoinHandle<_>>::new();
+        for i in 0..10 {
+            let cell_clone = Arc::clone(&cell);
+            let counter_clone = Arc::clone(&counter);
+            let handler = std::thread::spawn(move || {
+                let data = cell_clone.read_relaxed().unwrap();
+                assert_eq!(data.vec.as_slice().join(", "), "Hello, World");
+                std::thread::sleep(std::time::Duration::from_secs(1 + i));
+                counter_clone.fetch_add(1, atomic::Ordering::Release);
+                cell_clone.finish_reading();
+                //println!("{}. {}", _i, data.vec.as_slice().join(", "));
+            });
+            join_handlers.push(handler);
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Read -> Cleanup
+        if let Err(e) = cell
+            .transition_to_cleanup_async(time::Duration::from_secs(1), |data| {
+                assert_eq!(data.vec.as_slice().join(", "), "Hello, World");
+                data.add("!!".to_string());
+                assert_eq!(data.vec.as_slice().join(", "), "Hello, World, !!");
+                Box::pin(async { Ok::<(), MyError>(()) })
+            })
+            .await
+        {
+            match e.kind {
+                PhasedErrorKind::GracefulWaitTimeout(tm) => {
+                    assert_eq!(tm, time::Duration::from_secs(1));
+                }
+                _ => panic!(),
+            }
+            assert_eq!(e.phase, Phase::Cleanup);
+        } else {
+            panic!();
+        }
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
+
+        if let Ok(mut data) = cell.lock_async().await {
+            assert_eq!(
+                &data.vec,
+                &["Hello".to_string(), "World".to_string(), "!!".to_string()]
+            );
+            data.clear();
+            assert_eq!(&data.vec, &[] as &[String]);
+        } else {
+            panic!();
+        }
+
+        assert!(counter.load(atomic::Ordering::Acquire) < 10);
     }
 }
