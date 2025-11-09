@@ -60,23 +60,6 @@ impl<T: Send + Sync> PhasedCell<T> {
         F: FnMut(&mut T) -> Result<(), E>,
         E: error::Error + Send + Sync + 'static,
     {
-        self._transition_to_cleanup(|data, phase_cd| {
-            if let Err(e) = f(data) {
-                Err(PhasedError::with_source(
-                    u8_to_phase(phase_cd),
-                    PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
-                    e,
-                ))
-            } else {
-                Ok(())
-            }
-        })
-    }
-
-    pub(crate) fn _transition_to_cleanup<F>(&self, mut f: F) -> Result<(), PhasedError>
-    where
-        F: FnMut(&mut T, u8) -> Result<(), PhasedError>,
-    {
         match self.phase.fetch_update(
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
@@ -92,9 +75,17 @@ impl<T: Send + Sync> PhasedCell<T> {
                     _ => PHASE_SETUP_TO_CLEANUP,
                 };
                 let data = unsafe { &mut *self.data_cell.get() };
-                let result = f(data, current_phase_cd);
+                let result_f = f(data);
                 self.change_phase(current_phase_cd, PHASE_CLEANUP);
-                result
+                if let Err(e) = result_f {
+                    Err(PhasedError::with_source(
+                        u8_to_phase(current_phase_cd),
+                        PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
+                        e,
+                    ))
+                } else {
+                    Ok(())
+                }
             }
             Err(PHASE_CLEANUP) => Err(PhasedError::new(
                 u8_to_phase(PHASE_CLEANUP),

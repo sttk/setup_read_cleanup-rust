@@ -105,27 +105,6 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
         F: FnMut(&mut T) -> Pin<Box<dyn Future<Output = Result<(), E>> + Send>>,
         E: error::Error + Send + Sync + 'static,
     {
-        self._transition_to_cleanup_async(|data, phase_cd| {
-            let fut = f(data);
-            Box::pin(async move {
-                if let Err(e) = fut.await {
-                    Err(PhasedError::with_source(
-                        u8_to_phase(phase_cd),
-                        PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
-                        e,
-                    ))
-                } else {
-                    Ok(())
-                }
-            })
-        })
-        .await
-    }
-
-    pub(crate) async fn _transition_to_cleanup_async<F>(&self, mut f: F) -> Result<(), PhasedError>
-    where
-        F: FnMut(&mut T, u8) -> Pin<Box<dyn Future<Output = Result<(), PhasedError>> + Send>>,
-    {
         match self.phase.fetch_update(
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
@@ -139,12 +118,20 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
                 let mut guard = self.data_mutex.lock().await;
                 let data_opt = unsafe { &mut *self.data_cell.get() };
                 if data_opt.is_some() {
-                    let result = f(data_opt.as_mut().unwrap(), PHASE_READ_TO_CLEANUP).await;
+                    let result = f(data_opt.as_mut().unwrap()).await;
                     unsafe {
                         core::ptr::swap(data_opt, &mut *guard);
                     }
                     self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
-                    result
+                    if let Err(e) = result {
+                        Err(PhasedError::with_source(
+                            u8_to_phase(PHASE_READ_TO_CLEANUP),
+                            PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
+                            e,
+                        ))
+                    } else {
+                        Ok(())
+                    }
                 } else {
                     self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
                     Err(PhasedError::new(
@@ -156,9 +143,17 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
             Ok(PHASE_SETUP) => {
                 let mut data_opt = self.data_mutex.lock().await;
                 if data_opt.is_some() {
-                    let result = f(data_opt.as_mut().unwrap(), PHASE_SETUP_TO_CLEANUP).await;
+                    let result = f(data_opt.as_mut().unwrap()).await;
                     self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
-                    result
+                    if let Err(e) = result {
+                        Err(PhasedError::with_source(
+                            u8_to_phase(PHASE_SETUP_TO_CLEANUP),
+                            PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
+                            e,
+                        ))
+                    } else {
+                        Ok(())
+                    }
                 } else {
                     self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
                     Err(PhasedError::new(
