@@ -13,21 +13,21 @@ mod phased_cell_async;
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 mod wait_async;
 
-use crate::{PhasedCell, PhasedCellSync};
-
-#[cfg(feature = "setup_read_cleanup-on-tokio")]
-use crate::PhasedCellAsync;
-
-use std::{cell, sync::atomic, sync::Arc};
+use std::{cell, marker, sync::atomic};
 
 pub struct GracefulPhasedCell<T: Send + Sync> {
-    cell: PhasedCell<T>,
     wait: GracefulWaitSync,
+    phase: atomic::AtomicU8,
+    data_cell: cell::UnsafeCell<T>,
+    _marker: marker::PhantomData<T>,
 }
 
 pub struct GracefulPhasedCellSync<T: Send + Sync> {
-    cell: PhasedCellSync<T>,
+    phase: atomic::AtomicU8,
     wait: GracefulWaitSync,
+    data_mutex: std::sync::Mutex<Option<T>>,
+    data_cell: cell::UnsafeCell<Option<T>>,
+    _marker: marker::PhantomData<T>,
 }
 
 pub struct GracefulWaitSync {
@@ -38,8 +38,11 @@ pub struct GracefulWaitSync {
 
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 pub struct GracefulPhasedCellAsync<T: Send + Sync> {
-    cell: PhasedCellAsync<T>,
-    wait: cell::LazyCell<Arc<GracefulWaitAsync>>,
+    phase: atomic::AtomicU8,
+    wait: GracefulWaitAsync,
+    data_mutex: tokio::sync::Mutex<Option<T>>,
+    data_cell: cell::UnsafeCell<Option<T>>,
+    _marker: marker::PhantomData<T>,
 }
 
 #[cfg(feature = "setup_read_cleanup-on-tokio")]

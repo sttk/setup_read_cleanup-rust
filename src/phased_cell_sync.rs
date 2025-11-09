@@ -102,23 +102,6 @@ impl<T: Send + Sync> PhasedCellSync<T> {
         F: FnMut(&mut T) -> Result<(), E>,
         E: error::Error + Send + Sync + 'static,
     {
-        self._transition_to_cleanup(|data, phase_cd| {
-            if let Err(e) = f(data) {
-                Err(PhasedError::with_source(
-                    u8_to_phase(phase_cd),
-                    PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
-                    e,
-                ))
-            } else {
-                Ok(())
-            }
-        })
-    }
-
-    pub(crate) fn _transition_to_cleanup<F>(&self, mut f: F) -> Result<(), PhasedError>
-    where
-        F: FnMut(&mut T, u8) -> Result<(), PhasedError>,
-    {
         match self.phase.fetch_update(
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
@@ -132,12 +115,20 @@ impl<T: Send + Sync> PhasedCellSync<T> {
                 Ok(mut guard) => {
                     let data_opt = unsafe { &mut *self.data_cell.get() };
                     if data_opt.is_some() {
-                        let result = f(data_opt.as_mut().unwrap(), PHASE_READ_TO_CLEANUP);
+                        let result = f(data_opt.as_mut().unwrap());
                         unsafe {
                             core::ptr::swap(data_opt, &mut *guard);
                         }
                         self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
-                        result
+                        if let Err(e) = result {
+                            Err(PhasedError::with_source(
+                                u8_to_phase(PHASE_READ_TO_CLEANUP),
+                                PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
+                                e,
+                            ))
+                        } else {
+                            Ok(())
+                        }
                     } else {
                         // impossible case
                         self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
@@ -158,9 +149,17 @@ impl<T: Send + Sync> PhasedCellSync<T> {
             Ok(PHASE_SETUP) => match self.data_mutex.lock() {
                 Ok(mut data_opt) => {
                     if data_opt.is_some() {
-                        let result = f(data_opt.as_mut().unwrap(), PHASE_SETUP_TO_CLEANUP);
+                        let result = f(data_opt.as_mut().unwrap());
                         self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
-                        result
+                        if let Err(e) = result {
+                            Err(PhasedError::with_source(
+                                u8_to_phase(PHASE_SETUP_TO_CLEANUP),
+                                PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
+                                e,
+                            ))
+                        } else {
+                            Ok(())
+                        }
                     } else {
                         // impossible case
                         self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);

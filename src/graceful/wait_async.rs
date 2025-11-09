@@ -7,19 +7,20 @@ use super::{GracefulWaitAsync, GracefulWaitError, GracefulWaitErrorKind};
 use std::{any, sync::atomic};
 use tokio::{sync, time};
 
+#[allow(clippy::new_without_default)]
 impl GracefulWaitAsync {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             counter: atomic::AtomicUsize::new(0),
             notify: sync::Notify::const_new(),
         }
     }
 
-    pub(crate) fn count_up(&self) {
+    pub fn count_up(&self) {
         self.counter.fetch_add(1, atomic::Ordering::AcqRel);
     }
 
-    pub(crate) fn count_down<F>(&self, f: F)
+    pub fn count_down<F>(&self, f: F)
     where
         F: Fn() -> bool,
     {
@@ -47,7 +48,7 @@ impl GracefulWaitAsync {
         }
     }
 
-    pub(crate) async fn wait_gracefully_async(
+    pub async fn wait_gracefully_async(
         &self,
         timeout: time::Duration,
     ) -> Result<(), GracefulWaitError> {
