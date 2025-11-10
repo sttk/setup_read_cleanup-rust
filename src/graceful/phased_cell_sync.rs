@@ -95,96 +95,104 @@ impl<T: Send + Sync> GracefulPhasedCellSync<T> {
                 _ => None,
             },
         ) {
-            Ok(PHASE_READ) => match self.data_mutex.lock() {
-                Ok(mut guard) => {
-                    let result_w = self.wait.wait_gracefully(timeout);
-                    let data_opt = unsafe { &mut *self.data_cell.get() };
-                    if data_opt.is_some() {
-                        let result_f = f(data_opt.as_mut().unwrap());
-                        unsafe {
-                            core::ptr::swap(data_opt, &mut *guard);
-                        }
-                        self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
-                        if let Err(e) = result_f {
-                            Err(PhasedError::with_source(
-                                u8_to_phase(PHASE_READ_TO_CLEANUP),
-                                PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
-                                e,
-                            ))
-                        } else if let Err(e) = result_w {
-                            match e.kind {
-                                GracefulWaitErrorKind::TimedOut(_) => Err(PhasedError::new(
+            Ok(PHASE_READ) => {
+                let result_w = self.wait.wait_gracefully(timeout);
+                match self.data_mutex.lock() {
+                    Ok(mut guard) => {
+                        let data_opt = unsafe { &mut *self.data_cell.get() };
+                        if data_opt.is_some() {
+                            let result_f = f(data_opt.as_mut().unwrap());
+                            unsafe {
+                                core::ptr::swap(data_opt, &mut *guard);
+                            }
+                            self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
+                            if let Err(e) = result_f {
+                                Err(PhasedError::with_source(
                                     u8_to_phase(PHASE_READ_TO_CLEANUP),
-                                    PhasedErrorKind::GracefulWaitTimeout(timeout),
-                                )),
-                                GracefulWaitErrorKind::MutexIsPoisoned => Err(PhasedError::new(
-                                    u8_to_phase(PHASE_READ_TO_CLEANUP),
-                                    PhasedErrorKind::StdMutexIsPoisoned,
-                                )),
+                                    PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
+                                    e,
+                                ))
+                            } else if let Err(e) = result_w {
+                                match e.kind {
+                                    GracefulWaitErrorKind::TimedOut(_) => Err(PhasedError::new(
+                                        u8_to_phase(PHASE_READ_TO_CLEANUP),
+                                        PhasedErrorKind::GracefulWaitTimeout(timeout),
+                                    )),
+                                    GracefulWaitErrorKind::MutexIsPoisoned => {
+                                        Err(PhasedError::new(
+                                            u8_to_phase(PHASE_READ_TO_CLEANUP),
+                                            PhasedErrorKind::StdMutexIsPoisoned,
+                                        ))
+                                    }
+                                }
+                            } else {
+                                Ok(())
                             }
                         } else {
-                            Ok(())
+                            // impossible case
+                            self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
+                            Err(PhasedError::new(
+                                u8_to_phase(PHASE_SETUP_TO_READ),
+                                PhasedErrorKind::InternalDataUnavailable,
+                            ))
                         }
-                    } else {
-                        // impossible case
+                    }
+                    Err(_) => {
                         self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
                         Err(PhasedError::new(
-                            u8_to_phase(PHASE_SETUP_TO_READ),
-                            PhasedErrorKind::InternalDataUnavailable,
+                            u8_to_phase(PHASE_READ_TO_CLEANUP),
+                            PhasedErrorKind::StdMutexIsPoisoned,
                         ))
                     }
                 }
-                Err(_) => {
-                    self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
-                    Err(PhasedError::new(
-                        u8_to_phase(PHASE_READ_TO_CLEANUP),
-                        PhasedErrorKind::StdMutexIsPoisoned,
-                    ))
-                }
-            },
-            Ok(PHASE_SETUP) => match self.data_mutex.lock() {
-                Ok(mut data_opt) => {
-                    let result_w = self.wait.wait_gracefully(timeout);
-                    if data_opt.is_some() {
-                        let result_f = f(data_opt.as_mut().unwrap());
-                        self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
-                        if let Err(e) = result_f {
-                            Err(PhasedError::with_source(
-                                u8_to_phase(PHASE_SETUP_TO_CLEANUP),
-                                PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
-                                e,
-                            ))
-                        } else if let Err(e) = result_w {
-                            match e.kind {
-                                GracefulWaitErrorKind::TimedOut(_) => Err(PhasedError::new(
+            }
+            Ok(PHASE_SETUP) => {
+                let result_w = self.wait.wait_gracefully(timeout);
+                match self.data_mutex.lock() {
+                    Ok(mut data_opt) => {
+                        if data_opt.is_some() {
+                            let result_f = f(data_opt.as_mut().unwrap());
+                            self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
+                            if let Err(e) = result_f {
+                                Err(PhasedError::with_source(
                                     u8_to_phase(PHASE_SETUP_TO_CLEANUP),
-                                    PhasedErrorKind::GracefulWaitTimeout(timeout),
-                                )),
-                                GracefulWaitErrorKind::MutexIsPoisoned => Err(PhasedError::new(
-                                    u8_to_phase(PHASE_SETUP_TO_CLEANUP),
-                                    PhasedErrorKind::StdMutexIsPoisoned,
-                                )),
+                                    PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
+                                    e,
+                                ))
+                            } else if let Err(e) = result_w {
+                                match e.kind {
+                                    GracefulWaitErrorKind::TimedOut(_) => Err(PhasedError::new(
+                                        u8_to_phase(PHASE_SETUP_TO_CLEANUP),
+                                        PhasedErrorKind::GracefulWaitTimeout(timeout),
+                                    )),
+                                    GracefulWaitErrorKind::MutexIsPoisoned => {
+                                        Err(PhasedError::new(
+                                            u8_to_phase(PHASE_SETUP_TO_CLEANUP),
+                                            PhasedErrorKind::StdMutexIsPoisoned,
+                                        ))
+                                    }
+                                }
+                            } else {
+                                Ok(())
                             }
                         } else {
-                            Ok(())
+                            // impossible case
+                            self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
+                            Err(PhasedError::new(
+                                u8_to_phase(PHASE_SETUP_TO_CLEANUP),
+                                PhasedErrorKind::InternalDataUnavailable,
+                            ))
                         }
-                    } else {
-                        // impossible case
+                    }
+                    Err(_) => {
                         self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
                         Err(PhasedError::new(
                             u8_to_phase(PHASE_SETUP_TO_CLEANUP),
-                            PhasedErrorKind::InternalDataUnavailable,
+                            PhasedErrorKind::StdMutexIsPoisoned,
                         ))
                     }
                 }
-                Err(_) => {
-                    self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
-                    Err(PhasedError::new(
-                        u8_to_phase(PHASE_SETUP_TO_CLEANUP),
-                        PhasedErrorKind::StdMutexIsPoisoned,
-                    ))
-                }
-            },
+            }
             Err(PHASE_CLEANUP) => Err(PhasedError::new(
                 u8_to_phase(PHASE_CLEANUP),
                 PhasedErrorKind::PhaseIsAlreadyCleanup,

@@ -99,8 +99,8 @@ impl<T: Send + Sync> GracefulPhasedCellAsync<T> {
             },
         ) {
             Ok(PHASE_READ) => {
-                let mut guard = self.data_mutex.lock().await;
                 let result_w = self.wait.wait_gracefully_async(timeout).await;
+                let mut guard = self.data_mutex.lock().await;
                 let data_opt = unsafe { &mut *self.data_cell.get() };
                 if data_opt.is_some() {
                     let result_f = f(data_opt.as_mut().unwrap()).await;
