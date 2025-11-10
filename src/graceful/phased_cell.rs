@@ -83,11 +83,11 @@ impl<T: Send + Sync> GracefulPhasedCell<T> {
             },
         ) {
             Ok(old_phase_cd) => {
+                let result_w = self.wait.wait_gracefully(timeout);
                 let current_phase_cd = match old_phase_cd {
                     PHASE_READ => PHASE_READ_TO_CLEANUP,
                     _ => PHASE_SETUP_TO_CLEANUP,
                 };
-                let result_w = self.wait.wait_gracefully(timeout);
                 let data = unsafe { &mut *self.data_cell.get() };
                 let result_f = f(data);
                 self.change_phase(current_phase_cd, PHASE_CLEANUP);
