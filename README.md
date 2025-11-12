@@ -1,19 +1,96 @@
 # [setup_read_cleanup][repo-url] [![crates.io][cratesio-img]][cratesio-url] [![doc.rs][docrs-img]][docrs-url] [![CI Status][ci-img]][ci-url] [![MIT License][mit-img]][mit-url]
 
-A library for safely transitioning through the three phases of shared resource access: setup, read, and cleanup.
+A library for managing data through distinct lifecycle phases: `Setup` -> `Read` -> `Cleanup`.
 
-This crate provides `PhasedLock` struct, which controls the updatability of internal data through three phases.
-The three phases are `Setup`, `Read`, and `Cleanup`.
-The internal data can be updated with exclusive control during the `Setup` and `Cleanup` phases.
-The `Read` phase allows the internal data to be treated as read-only without exclusive control.
+This crate provides "phased cells", a collection of smart pointer types that enforce a specific lifecycle for the data they manage. This is useful for data that is initialized once, read by multiple threads or tasks for a period, and then explicitly destroyed.
 
-In this `PhasedLock`, an atomic variable is used to determine the phase.
-Atomic variables control the strictness of read and write ordering through `Ordering` specifications; however, stricter settings incur higher costs.
-Taking this into account, this crate provide two pairs of methods: `read_fast` and `phase_fast`, which prioritize speed over strictness, and `read_gracefully` and `phase_exact`, which prioritize strictness over speed.
+## Core Concepts
 
-In the transition from the `Read` to the `Cleanup` phase, this crate provides a "graceful wait" mechanism that waits for operations on data acquired within the `Read` phase to finish.
-After acquiring the data using the `PhasedLock#read_gracefully` method, you call the `PhasedLock#finish_reading_gracefully` method to tell the `PhasedLock` that processing the data is complete.
-By making the transition to the `Cleanup` phase wait until `PhasedLock#finish_reading_gracefully` is executed in a way that pairs with `PhasedLock#read_gracefully` in each multiple thread, the internal data can be updated safely.
+The lifecycle is divided into three phases:
+
+-   **`Setup`**: The initial phase. The data can be mutably accessed for initialization.
+-   **`Read`**: The operational phase. The data can only be accessed immutably. This phase is optimized for concurrent, lock-free reads.
+-   **`Cleanup`**: The final phase. The data can be mutably accessed again for deconstruction or resource cleanup.
+
+## Cell Variants
+
+This crate offers several cell variants to suit different concurrency needs:
+
+-   [`PhasedCell`]: The basic cell. It is `Sync`, allowing it to be shared across threads for reading. However, mutable access via `get_mut_unlocked` is not thread-safe and requires the caller to ensure exclusive access.
+-   [`PhasedCellSync`]: A thread-safe version that uses a `std::sync::Mutex` to allow for safe concurrent mutable access during the `Setup` and `Cleanup` phases.
+-   [`PhasedCellAsync`]: (Requires the `setup_read_cleanup-on-tokio` feature) An `async` version of `PhasedCellSync` that uses a `tokio::sync::Mutex`.
+
+## Graceful Shutdown
+
+(Requires the `setup_read_cleanup-graceful` feature)
+
+The `graceful` module provides wrappers that add graceful shutdown capabilities. When transitioning to the `Cleanup` phase, these cells will wait for a specified duration for all active read operations to complete.
+
+-   [`GracefulPhasedCell`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/graceful/struct.GracefulPhasedCell.html)
+-   [`GracefulPhasedCellSync`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/graceful/struct.GracefulPhasedCellSync.html)
+-   [`GracefulPhasedCellAsync`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/graceful/struct.GracefulPhasedCellAsync.html) (Requires both features)
+
+## Features
+
+-   `setup_read_cleanup-on-tokio`: Enables the `async` cell variants (`PhasedCellAsync`, `GracefulPhasedCellAsync`) which use `tokio::sync`.
+-   `setup_read_cleanup-graceful`: Enables the `graceful` module, which provides cells with graceful shutdown capabilities.
+
+## Examples
+
+Using a `static PhasedCellSync` to initialize data, read it from multiple threads, and then clean it up.
+
+```rust
+use setup_read_cleanup::{PhasedCellSync, Phase};
+use std::thread;
+
+struct MyData {
+    items: Vec<i32>,
+}
+
+// Declare a static PhasedCellSync instance
+static CELL: PhasedCellSync<MyData> = PhasedCellSync::new(MyData { items: Vec::new() });
+
+fn main() {
+    // --- Setup Phase ---
+    assert_eq!(CELL.phase(), Phase::Setup);
+    {
+        let mut data = CELL.lock().unwrap();
+        data.items.push(10);
+        data.items.push(20);
+    } // Lock is released here
+
+    // --- Transition to Read Phase ---
+    CELL.transition_to_read(|data| {
+        data.items.push(30);
+        Ok::<(), std::io::Error>(())
+    }).unwrap();
+    assert_eq!(CELL.phase(), Phase::Read);
+
+    // --- Read Phase ---
+    // Now, multiple threads can read the data concurrently.
+    let mut handles = Vec::new();
+    for i in 0..3 {
+        handles.push(thread::spawn(move || {
+            let data = CELL.read().unwrap(); // Access the static CELL
+            println!("Thread {} reads: {:?}", i, data.items);
+            assert_eq!(data.items, &[10, 20, 30]);
+        }));
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // --- Transition to Cleanup Phase ---
+    CELL.transition_to_cleanup(|data| {
+        println!("Cleaning up. Final item: {:?}", data.items.pop());
+        Ok::<(), std::io::Error>(())
+    }).unwrap();
+    assert_eq!(CELL.phase(), Phase::Cleanup);
+
+    println!("Example finished successfully!");
+}
+``````
 
 ## Installation
 
@@ -22,136 +99,6 @@ In Cargo.toml, write this crate as a dependency:
 ```toml
 [dependencies]
 setup_read_cleanup = "0.2.0"
-```
-
-## Usage
-
-This crate provides a mechanism for safely managing shared data through three distinct phases: Setup, Read, and Cleanup.
-This is ideal for scenarios where a resource is constructed, becomes read-only for a period, and is then prepared for destruction or reconstruction.
-
-### 1. Defining a Phased Lock and Data Structure
-
-First, define the data structure that `PhasedLock` will protect.
-For this example, we'll initialize a `PhasedLock` instance as a static variable for global access.
-The generic type `T` must implement `Send + Sync` to ensure safe sharing across threads.
-
-```rust
-use setup_read_cleanup::PhasedLock;
-use std::{error, fmt};
-
-// Define your data structure and a custom error type.
-struct MyData {
-    num: i32,
-    str: Option<String>,
-}
-
-#[derive(Debug)]
-struct MyError;
-impl fmt::Display for MyError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "MyError") }
-}
-impl error::Error for MyError {}
-
-// For this example, we create a static PhasedLock instance for global access.
-static PHASED_LOCK: PhasedLock<MyData> = PhasedLock::new(MyData {
-    num: 0,
-    str: None,
-});
-```
-
-### 2. The Setup Phase: Data Initialization 
-
-A `PhasedLock` instance starts in the Setup phase by default.
-In this phase, you can use the `lock_for_update()` method to gain exclusive access and initialize your data.
-
-```rust
-// In the Setup phase, we use lock_for_update() to get exclusive access.
-{
-    let mut data = PHASED_LOCK.lock_for_update().unwrap();
-    data.num = 123;
-    data.str = Some("hello".to_string());
-} // The lock is automatically released when the guard goes out of scope.
-```
-
-This method returns a mutable guard that provides a safe, exclusive lock, preventing data races during initialization.
-
-### 3. Transitioning to the Read Phase
-
-Once the data is set up, call `transition_to_read()` to move to the Read phase.
-This method is only callable from the Setup phase and requires a closure to perform any final, read-only operations before the transition completes.
-
-```rust
-// Transition to the Read phase, performing a final read-only check.
-PHASED_LOCK.transition_to_read(|_data| Ok::<(), MyError>(())).unwrap();
-```
-
-After this transition, the data is ready for concurrent, read-only access by multiple threads.
-
-### 4. The Read Phase: Concurrent Reading
-
-In the Read phase, you can concurrently read the data.
-For this, the crate provides a "graceful wait" mechanism to ensure a safe transition later on.
-Use `read_gracefully()` to acquire a read-only guard and register your reader.
-
-After you have finished processing the data, you must call `finish_reading_gracefully()` to inform the lock that you are done.
-
-```rust
-use std::thread;
-
-// ... (code continued from above) ...
-
-// In the Read phase, we read the data concurrently.
-let handles: Vec<_> = (0..3).map(|i| {
-    thread::spawn(move || {
-        let data = PHASED_LOCK.read_gracefully().unwrap();
-        println!("Thread {}: num={}, str={:?}", i, data.num, data.str);
-
-        // It is crucial to call this method to signal that reading is complete.
-        PHASED_LOCK.finish_reading_gracefully().unwrap();
-    })
-}).collect();
-
-for h in handles {
-    h.join().unwrap();
-}
-```
-
-This pattern is essential for safe transitions, as it allows the lock to track active readers.
-
-If you can guarantee that the Read phase will definitely finish before transitioning to the Cleanup phase, you can use the faster `read_fast` method. (This does not have a corresponding finish notification method, and the graceful wait will not work.)
-
-### 5. Transitioning to the Cleanup Phase
-
-To move to the Cleanup phase, call `transition_to_cleanup()`.
-The `WaitStrategy::GracefulWait` option ensures that the lock will wait for all readers registered via `read_gracefully()` to finish before proceeding.
-
-```rust
-use setup_read_cleanup::WaitStrategy;
-use std::time::Duration;
-
-// ... (code continued from above) ...
-
-// Transition to the Cleanup phase. This call will block until all readers are finished,
-// with a maximum wait time of 10 seconds.
-PHASED_LOCK.transition_to_cleanup(WaitStrategy::GracefulWait {
-    timeout: Duration::from_secs(10),
-}).unwrap();
-```
-
-For a faster but less safe transition, you can use `WaitStrategy::NoWait`, which does not wait for active readers.
-
-### 6. The Cleanup Phase: Final Updates
-
-The Cleanup phase allows for exclusive data updates, just like the Setup phase.
-You can use this phase to tear down or reset the data.
-
-```rust
-// In the Cleanup phase, we reset the data.
-{
-    let mut data = PHASED_LOCK.lock_for_update().unwrap();
-    data.num = 0;
-    data.str = None;
-} // The lock is released when the guard goes out of scope.
 ```
 
 ## Supported Rust versions
