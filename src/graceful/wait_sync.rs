@@ -8,6 +8,7 @@ use std::{any, sync, sync::atomic, time};
 
 #[allow(clippy::new_without_default)]
 impl GracefulWaitSync {
+    /// Creates a new `GracefulWaitSync`.
     pub const fn new() -> Self {
         Self {
             counter: atomic::AtomicUsize::new(0),
@@ -16,10 +17,15 @@ impl GracefulWaitSync {
         }
     }
 
+    /// Increments the internal counter of active readers.
     pub fn count_up(&self) {
         self.counter.fetch_add(1, atomic::Ordering::AcqRel);
     }
 
+    /// Decrements the internal counter of active readers.
+    ///
+    /// If the counter becomes zero and the provided closure `f` returns true,
+    /// it notifies the waiting thread.
     pub fn count_down<F>(&self, f: F)
     where
         F: Fn() -> bool,
@@ -51,6 +57,11 @@ impl GracefulWaitSync {
         }
     }
 
+    /// Waits until all active readers have finished, or until the timeout is reached.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the wait times out or if the underlying mutex is poisoned.
     pub fn wait_gracefully(&self, timeout: std::time::Duration) -> Result<(), GracefulWaitError> {
         let started = time::Instant::now();
 

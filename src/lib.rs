@@ -2,6 +2,109 @@
 // This program is free software under MIT License.
 // See the file LICENSE in this distribution for more details.
 
+//! A library for managing data through distinct lifecycle phases.
+//!
+//! This crate provides "phased cells", a collection of smart pointer types that enforce
+//! a specific lifecycle for the data they manage: `Setup` -> `Read` -> `Cleanup`.
+//! This is useful for data that is initialized once, read by multiple threads or tasks
+//! for a period, and then explicitly destroyed.
+//!
+//! # Core Concepts
+//!
+//! The lifecycle is divided into three phases:
+//! - **`Setup`**: The initial phase. The data can be mutably accessed for initialization.
+//! - **`Read`**: The operational phase. The data can only be accessed immutably. This phase
+//!   is optimized for concurrent, lock-free reads.
+//! - **`Cleanup`**: The final phase. The data can be mutably accessed again for deconstruction
+//!   or resource cleanup.
+//!
+//! ## Cell Variants
+//!
+//! This crate offers several cell variants to suit different concurrency needs:
+//!
+//! - [`PhasedCell`]: The basic cell. It is `Sync`, allowing it to be shared across
+//!   threads for reading. However, mutable access via [`get_mut_unlocked`](PhasedCell::get_mut_unlocked)
+//!   is not thread-safe and requires the caller to ensure exclusive access.
+//!
+//! - [`PhasedCellSync`]: A thread-safe version that uses a `std::sync::Mutex` to allow for
+//!   safe concurrent mutable access during the `Setup` and `Cleanup` phases.
+//!
+//! - [`PhasedCellAsync`]: (Requires the `setup_read_cleanup-on-tokio` feature) An `async` version
+//!   of `PhasedCellSync` that uses a `tokio::sync::Mutex`.
+//!
+//! ## Graceful Shutdown
+//!
+//! (Requires the `setup_read_cleanup-graceful` feature)
+//!
+//! The `graceful` module provides wrappers that add graceful shutdown capabilities. When
+//! transitioning to the `Cleanup` phase, these cells will wait for a specified duration
+//! for all active read operations to complete.
+//!
+//! - [`GracefulPhasedCell`](graceful::GracefulPhasedCell)
+//! - [`GracefulPhasedCellSync`](graceful::GracefulPhasedCellSync)
+//! - [`GracefulPhasedCellAsync`](graceful::GracefulPhasedCellAsync) (Requires both features)
+//!
+//! # Examples
+//!
+//! Using `PhasedCellSync` to initialize data, read it from multiple threads, and then
+//! clean it up.
+//!
+//! ```
+//! use setup_read_cleanup::{PhasedCellSync, Phase};
+//! use std::sync::Arc;
+//! use std::thread;
+//!
+//! struct MyData {
+//!     items: Vec<i32>,
+//! }
+//!
+//! let cell = Arc::new(PhasedCellSync::new(MyData { items: Vec::new() }));
+//!
+//! // --- Setup Phase ---
+//! assert_eq!(cell.phase(), Phase::Setup);
+//! {
+//!     let mut data = cell.lock().unwrap();
+//!     data.items.push(10);
+//!     data.items.push(20);
+//! } // Lock is released here
+//!
+//! // --- Transition to Read Phase ---
+//! cell.transition_to_read(|data| {
+//!     data.items.push(30);
+//!     Ok::<(), std::io::Error>(())
+//! }).unwrap();
+//! assert_eq!(cell.phase(), Phase::Read);
+//!
+//! // --- Read Phase ---
+//! // Now, multiple threads can read the data concurrently.
+//! let mut handles = Vec::new();
+//! for i in 0..3 {
+//!     let cell_clone = Arc::clone(&cell);
+//!     handles.push(thread::spawn(move || {
+//!         let data = cell_clone.read().unwrap();
+//!         println!("Thread {} reads: {:?}", i, data.items);
+//!         assert_eq!(data.items, &[10, 20, 30]);
+//!     }));
+//! }
+//!
+//! for handle in handles {
+//!     handle.join().unwrap();
+//! }
+//!
+//! // --- Transition to Cleanup Phase ---
+//! cell.transition_to_cleanup(|data| {
+//!     println!("Cleaning up. Final item: {:?}", data.items.pop());
+//!     Ok::<(), std::io::Error>(())
+//! }).unwrap();
+//! assert_eq!(cell.phase(), Phase::Cleanup);
+//! ```
+//!
+//! # Features
+//!
+//! - `setup_read_cleanup-on-tokio`: Enables the `async` cell variants (`PhasedCellAsync`, `GracefulPhasedCellAsync`)
+//!   which use `tokio::sync`.
+//! - `setup_read_cleanup-graceful`: Enables the `graceful` module, which provides cells with
+//!   graceful shutdown capabilities.
 mod errors;
 mod phase;
 mod phased_cell;
@@ -10,48 +113,101 @@ mod phased_cell_sync;
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 mod phased_cell_async;
 
+/// A module for graceful shutdown of phased cells.
+///
+/// This module provides extensions and wrappers for `PhasedCell` and its variants
+/// to support graceful shutdown, allowing ongoing operations to complete before
+/// transitioning to the `Cleanup` phase.
 #[cfg(feature = "setup_read_cleanup-graceful")]
 pub mod graceful;
 
 use std::{cell, error, marker, sync::atomic};
 
+/// Represents the current operational phase of a phased cell.
+///
+/// The lifecycle of a phased cell progresses through these three distinct phases:
+/// 1. `Setup`: The initial phase where the data is constructed and initialized.
+/// 2. `Read`: The main operational phase where the data is accessed for read-only operations.
+/// 3. `Cleanup`: The final phase where the data is deconstructed and resources are released.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Phase {
+    /// The initial phase for setting up the data.
     Setup,
+    /// The phase for reading the data.
     Read,
+    /// The final phase for cleaning up the data.
     Cleanup,
 }
 
+/// An enumeration of possible error kinds that can occur in a phased cell.
+///
+/// This enum categorizes the various errors that can arise during phase transitions
+/// or data access, providing specific information about the nature of the failure.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PhasedErrorKind {
+    /// An error indicating that a method was called before or after the `Read` phase.
     CannotCallUnlessPhaseRead(String),
+    /// An error indicating that a method was called during the `Setup` phase.
     CannotCallOnPhaseSetup(String),
+    /// An error indicating that a method was called during the `Read` phase.
     CannotCallOnPhaseRead(String),
+    /// An error indicating that the internal data is not available.
     InternalDataUnavailable,
+    /// An error indicating that the phase is already `Read`.
     PhaseIsAlreadyRead,
+    /// An error indicating that the phase is already `Cleanup`.
     PhaseIsAlreadyCleanup,
+    /// An error indicating that a phase transition to `Read` is in progress.
     DuringTransitionToRead,
+    /// An error indicating that a phase transition to `Cleanup` is in progress.
     DuringTransitionToCleanup,
+    /// An error indicating that a closure failed to run during the transition to `Read`.
     FailToRunClosureDuringTransitionToRead,
+    /// An error indicating that a closure failed to run during the transition to `Cleanup`.
     FailToRunClosureDuringTransitionToCleanup,
+    /// An error indicating that a `std::sync::Mutex` is poisoned.
     StdMutexIsPoisoned,
 
+    /// An error indicating a timeout occurred while waiting for a graceful shutdown.
     #[cfg(feature = "setup_read_cleanup-graceful")]
     GracefulWaitTimeout(std::time::Duration),
 }
 
+/// A structure representing an error that occurred within a phased cell.
+///
+/// It contains the phase in which the error occurred, the kind of error, and an
+/// optional source error for more context.
 pub struct PhasedError {
+    /// The phase in which the error occurred.
     pub phase: Phase,
+    /// The kind of error that occurred.
     pub kind: PhasedErrorKind,
     source: Option<Box<dyn error::Error + Send + Sync>>,
 }
 
+/// A cell that manages data through distinct `Setup`, `Read`, and `Cleanup` phases.
+///
+/// `PhasedCell` enforces a specific data lifecycle: initialization in the `Setup`
+/// phase, a read-only operational period in the `Read` phase, and deconstruction
+/// in the `Cleanup` phase.
+///
+/// This cell is `Sync`, allowing it to be shared across threads. During the `Read`
+/// phase, the `read` and `read_relaxed` methods can be safely called from multiple
+/// threads simultaneously. Access during phase transitions and mutable access in
+/// other phases are not thread-safe.
 pub struct PhasedCell<T: Send + Sync> {
     phase: atomic::AtomicU8,
     data_cell: cell::UnsafeCell<T>,
     _marker: marker::PhantomData<T>,
 }
 
+/// A thread-safe cell that manages data through `Setup`, `Read`, and `Cleanup` phases
+/// with support for concurrent mutable access.
+///
+/// `PhasedCellSync` is similar to `PhasedCell` but uses a `std::sync::Mutex` to
+/// synchronize access to the internal data. This is particularly useful when
+/// multiple threads need to mutate the data during the `Setup` or `Cleanup`
+/// phases, which is not safely supported by `PhasedCell`.
 pub struct PhasedCellSync<T: Send + Sync> {
     phase: atomic::AtomicU8,
     data_mutex: std::sync::Mutex<Option<T>>,
@@ -59,10 +215,18 @@ pub struct PhasedCellSync<T: Send + Sync> {
     _marker: marker::PhantomData<T>,
 }
 
+/// A RAII implementation of a scoped lock for a `PhasedCellSync`.
+///
+/// When this structure is dropped (falls out of scope), the lock will be released.
 pub struct StdMutexGuard<'mutex, T> {
     inner: std::sync::MutexGuard<'mutex, Option<T>>,
 }
 
+/// An asynchronous, thread-safe cell for managing data through `Setup`, `Read`, and `Cleanup` phases.
+///
+/// `PhasedCellAsync` is similar to `PhasedCellSync` but is designed for asynchronous
+/// contexts using `tokio`. It leverages a `tokio::sync::Mutex` to provide asynchronous,
+/// non-blocking locking, making it suitable for use in async applications.
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 pub struct PhasedCellAsync<T: Send + Sync> {
     phase: atomic::AtomicU8,
@@ -71,6 +235,9 @@ pub struct PhasedCellAsync<T: Send + Sync> {
     _marker: marker::PhantomData<T>,
 }
 
+/// A RAII implementation of a scoped lock for a `PhasedCellAsync`.
+///
+/// When this structure is dropped (falls out of scope), the lock will be released.
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 pub struct TokioMutexGuard<'mutex, T> {
     inner: tokio::sync::MutexGuard<'mutex, Option<T>>,

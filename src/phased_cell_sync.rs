@@ -9,6 +9,9 @@ use std::ops::{Deref, DerefMut};
 use std::{any, cell, error, marker, sync, sync::atomic};
 
 impl<'mutex, T> StdMutexGuard<'mutex, T> {
+    /// Tries to create a new `StdMutexGuard`.
+    ///
+    /// This method returns `None` if the guarded data is `None`.
     pub fn try_new(guarded_option: sync::MutexGuard<'mutex, Option<T>>) -> Option<Self> {
         if guarded_option.is_some() {
             Some(Self {
@@ -40,6 +43,15 @@ unsafe impl<T: Send + Sync> Sync for PhasedCellSync<T> {}
 unsafe impl<T: Send + Sync> Send for PhasedCellSync<T> {}
 
 impl<T: Send + Sync> PhasedCellSync<T> {
+    /// Creates a new `PhasedCellSync` in the `Setup` phase, containing the provided data.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use setup_read_cleanup::PhasedCellSync;
+    ///
+    /// let cell = PhasedCellSync::new(10);
+    /// ```
     pub const fn new(data: T) -> Self {
         Self {
             phase: atomic::AtomicU8::new(PHASE_SETUP),
@@ -49,16 +61,48 @@ impl<T: Send + Sync> PhasedCellSync<T> {
         }
     }
 
+    /// Returns the current phase of the cell with relaxed memory ordering.
+    ///
+    /// This method is faster than `phase` but provides weaker memory ordering guarantees.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use setup_read_cleanup::{Phase, PhasedCellSync};
+    ///
+    /// let cell = PhasedCellSync::new(10);
+    /// assert_eq!(cell.phase_relaxed(), Phase::Setup);
+    /// ```
     pub fn phase_relaxed(&self) -> Phase {
         let phase = self.phase.load(atomic::Ordering::Relaxed);
         u8_to_phase(phase)
     }
 
+    /// Returns the current phase of the cell with acquire memory ordering.
+    ///
+    /// This method provides stronger memory ordering guarantees than `phase_relaxed`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use setup_read_cleanup::{Phase, PhasedCellSync};
+    ///
+    /// let cell = PhasedCellSync::new(10);
+    /// assert_eq!(cell.phase(), Phase::Setup);
+    /// ```
     pub fn phase(&self) -> Phase {
         let phase = self.phase.load(atomic::Ordering::Acquire);
         u8_to_phase(phase)
     }
 
+    /// Returns a reference to the contained data with relaxed memory ordering.
+    ///
+    /// This method is only successful if the cell is in the `Read` phase.
+    /// It provides weaker memory ordering guarantees.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cell is not in the `Read` phase or the data is unavailable.
     pub fn read_relaxed(&self) -> Result<&T, PhasedError> {
         let phase = self.phase.load(atomic::Ordering::Relaxed);
         if phase != PHASE_READ {
@@ -78,6 +122,14 @@ impl<T: Send + Sync> PhasedCellSync<T> {
         }
     }
 
+    /// Returns a reference to the contained data with acquire memory ordering.
+    ///
+    /// This method is only successful if the cell is in the `Read` phase.
+    /// It provides stronger memory ordering guarantees.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cell is not in the `Read` phase or the data is unavailable.
     pub fn read(&self) -> Result<&T, PhasedError> {
         let phase = self.phase.load(atomic::Ordering::Acquire);
         if phase != PHASE_READ {
@@ -97,6 +149,14 @@ impl<T: Send + Sync> PhasedCellSync<T> {
         }
     }
 
+    /// Transitions the cell to the `Cleanup` phase.
+    ///
+    /// This method takes a closure `f` which is executed on the contained data.
+    /// This can be called from the `Setup` or `Read` phase.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the phase transition fails, the mutex is poisoned, or the closure returns an error.
     pub fn transition_to_cleanup<F, E>(&self, mut f: F) -> Result<(), PhasedError>
     where
         F: FnMut(&mut T) -> Result<(), E>,
@@ -193,6 +253,15 @@ impl<T: Send + Sync> PhasedCellSync<T> {
         }
     }
 
+    /// Transitions the cell from the `Setup` phase to the `Read` phase.
+    ///
+    /// This method takes a closure `f` which is executed on the contained data
+    /// during the transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cell is not in the `Setup` phase, the mutex is
+    /// poisoned, or if the closure returns an error.
     pub fn transition_to_read<F, E>(&self, mut f: F) -> Result<(), PhasedError>
     where
         F: FnMut(&mut T) -> Result<(), E>,
@@ -257,6 +326,15 @@ impl<T: Send + Sync> PhasedCellSync<T> {
         }
     }
 
+    /// Locks the cell and returns a guard that allows mutable access to the data.
+    ///
+    /// This method is only successful if the cell is in the `Setup` or `Cleanup` phase.
+    /// The returned guard releases the lock when it is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cell is in the `Read` phase, is transitioning,
+    /// or if the mutex is poisoned.
     pub fn lock(&self) -> Result<StdMutexGuard<'_, T>, PhasedError> {
         let phase = self.phase.load(atomic::Ordering::Acquire);
         match phase {
