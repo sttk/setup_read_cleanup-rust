@@ -172,11 +172,11 @@ impl<T: Send + Sync> GracefulPhasedCell<T> {
     }
 
     #[allow(clippy::mut_from_ref)]
-    pub fn get_mut(&self) -> Result<&mut T, PhasedError> {
+    pub fn get_mut_unlocked(&self) -> Result<&mut T, PhasedError> {
         match self.phase.load(atomic::Ordering::Acquire) {
             PHASE_READ => Err(PhasedError::new(
                 u8_to_phase(PHASE_READ),
-                PhasedErrorKind::CannotCallOnPhaseRead(Self::method_name("get_mut")),
+                PhasedErrorKind::CannotCallOnPhaseRead(Self::method_name("get_mut_unlocked")),
             )),
             PHASE_SETUP_TO_READ => Err(PhasedError::new(
                 u8_to_phase(PHASE_SETUP_TO_READ),
@@ -287,7 +287,7 @@ mod tests_of_phased_cell {
         assert_eq!(cell.phase_relaxed(), Phase::Setup);
         assert_eq!(cell.phase(), Phase::Setup);
 
-        match cell.get_mut() {
+        match cell.get_mut_unlocked() {
             Ok(data) => data.add("Hello".to_string()),
             Err(e) => panic!("{e:?}"),
         }
@@ -318,7 +318,7 @@ mod tests_of_phased_cell {
         assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
         assert_eq!(cell.phase(), Phase::Cleanup);
 
-        if let Ok(data) = cell.get_mut() {
+        if let Ok(data) = cell.get_mut_unlocked() {
             data.add("!".to_string());
             assert_eq!(
                 &data.vec,
@@ -335,7 +335,7 @@ mod tests_of_phased_cell {
     fn read_relaxed_internal_data_in_multi_threads() {
         let cell = GracefulPhasedCell::new(MyStruct::new());
 
-        match cell.get_mut() {
+        match cell.get_mut_unlocked() {
             Ok(data) => data.add("Hello".to_string()),
             Err(e) => panic!("{e:?}"),
         }
@@ -381,7 +381,7 @@ mod tests_of_phased_cell {
         assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
         assert_eq!(cell.phase(), Phase::Cleanup);
 
-        if let Ok(data) = cell.get_mut() {
+        if let Ok(data) = cell.get_mut_unlocked() {
             data.add("!".to_string());
             assert_eq!(
                 &data.vec,
@@ -485,7 +485,7 @@ mod tests_of_phased_cell {
     }
 
     #[test]
-    fn fail_to_get_mut_if_phase_is_read() {
+    fn fail_to_get_mut_unlocked_if_phase_is_read() {
         let cell = GracefulPhasedCell::new(MyStruct::new());
 
         // Setup -> Read
@@ -493,11 +493,11 @@ mod tests_of_phased_cell {
             panic!("{e:?}");
         }
 
-        if let Err(e) = cell.get_mut() {
+        if let Err(e) = cell.get_mut_unlocked() {
             assert_eq!(e.phase, Phase::Read);
             assert_eq!(
                 e.kind,
-                PhasedErrorKind::CannotCallOnPhaseRead("setup_read_cleanup::graceful::GracefulPhasedCell<setup_read_cleanup::graceful::phased_cell::tests_of_phased_cell::MyStruct>::get_mut".to_string()),
+                PhasedErrorKind::CannotCallOnPhaseRead("setup_read_cleanup::graceful::GracefulPhasedCell<setup_read_cleanup::graceful::phased_cell::tests_of_phased_cell::MyStruct>::get_mut_unlocked".to_string()),
             );
         } else {
             panic!();
@@ -582,7 +582,7 @@ mod tests_of_phased_cell {
     }
 
     #[test]
-    fn fail_to_get_mut_during_transition_to_read() {
+    fn fail_to_get_mut_unlocked_during_transition_to_read() {
         let cell = GracefulPhasedCell::new(MyStruct::new());
 
         let cell = Arc::new(cell);
@@ -602,7 +602,7 @@ mod tests_of_phased_cell {
 
         std::thread::sleep(time::Duration::from_millis(100));
 
-        if let Err(e) = cell.get_mut() {
+        if let Err(e) = cell.get_mut_unlocked() {
             assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToRead);
         } else {
             panic!();
@@ -617,7 +617,7 @@ mod tests_of_phased_cell {
     }
 
     #[test]
-    fn fail_to_get_mut_during_transition_to_cleanup_from_setup() {
+    fn fail_to_get_mut_unlocked_during_transition_to_cleanup_from_setup() {
         let cell = GracefulPhasedCell::new(MyStruct::new());
 
         let cell = Arc::new(cell);
@@ -639,7 +639,7 @@ mod tests_of_phased_cell {
 
         std::thread::sleep(time::Duration::from_millis(100));
 
-        if let Err(e) = cell.get_mut() {
+        if let Err(e) = cell.get_mut_unlocked() {
             assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
         } else {
             panic!();
@@ -654,7 +654,7 @@ mod tests_of_phased_cell {
     }
 
     #[test]
-    fn fail_to_get_mut_during_transition_to_cleanup_from_read() {
+    fn fail_to_get_mut_unlocked_during_transition_to_cleanup_from_read() {
         let cell = GracefulPhasedCell::new(MyStruct::new());
 
         if let Err(e) = cell.transition_to_read(|_data| Ok::<(), MyError>(())) {
@@ -678,7 +678,7 @@ mod tests_of_phased_cell {
 
         std::thread::sleep(time::Duration::from_millis(100));
 
-        if let Err(e) = cell.get_mut() {
+        if let Err(e) = cell.get_mut_unlocked() {
             assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
         } else {
             panic!();
@@ -946,7 +946,7 @@ mod tests_of_phased_cell {
     fn transition_to_cleanup_gracefully() {
         let cell = GracefulPhasedCell::new(MyStruct::new());
 
-        match cell.get_mut() {
+        match cell.get_mut_unlocked() {
             Ok(data) => data.add("Hello".to_string()),
             Err(e) => panic!("{e:?}"),
         }
@@ -991,7 +991,7 @@ mod tests_of_phased_cell {
         assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
         assert_eq!(cell.phase(), Phase::Cleanup);
 
-        if let Ok(data) = cell.get_mut() {
+        if let Ok(data) = cell.get_mut_unlocked() {
             assert_eq!(
                 &data.vec,
                 &["Hello".to_string(), "World".to_string(), "!!".to_string()]
@@ -1009,7 +1009,7 @@ mod tests_of_phased_cell {
     fn transition_to_cleanup_gracefully_but_timeout() {
         let cell = GracefulPhasedCell::new(MyStruct::new());
 
-        match cell.get_mut() {
+        match cell.get_mut_unlocked() {
             Ok(data) => data.add("Hello".to_string()),
             Err(e) => panic!("{e:?}"),
         }
@@ -1062,7 +1062,7 @@ mod tests_of_phased_cell {
         assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
         assert_eq!(cell.phase(), Phase::Cleanup);
 
-        if let Ok(data) = cell.get_mut() {
+        if let Ok(data) = cell.get_mut_unlocked() {
             assert_eq!(
                 &data.vec,
                 &["Hello".to_string(), "World".to_string(), "!!".to_string()]
