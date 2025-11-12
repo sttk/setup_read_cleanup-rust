@@ -33,7 +33,7 @@ mod integration_tests_of_phased_cell {
     #[test]
     fn test() {
         for i in 0..3 {
-            match PHASED_CELL.get_mut() {
+            match PHASED_CELL.get_mut_unlocked() {
                 Ok(data) => {
                     data.add("A-".to_string() + &i.to_string());
                 }
@@ -69,7 +69,7 @@ mod integration_tests_of_phased_cell {
         }
 
         for i in 0..4 {
-            match PHASED_CELL.get_mut() {
+            match PHASED_CELL.get_mut_unlocked() {
                 Ok(data) => {
                     data.add("D-".to_string() + &i.to_string());
                 }
@@ -77,7 +77,7 @@ mod integration_tests_of_phased_cell {
             }
         }
 
-        match PHASED_CELL.get_mut() {
+        match PHASED_CELL.get_mut_unlocked() {
             Ok(data) => {
                 assert_eq!(
                     &data.vec,
