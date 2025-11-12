@@ -46,57 +46,58 @@
 //!
 //! # Examples
 //!
-//! Using `PhasedCellSync` to initialize data, read it from multiple threads, and then
+//! Using a `static PhasedCellSync` to initialize data, read it from multiple threads, and then
 //! clean it up.
 //!
 //! ```
 //! use setup_read_cleanup::{PhasedCellSync, Phase};
-//! use std::sync::Arc;
 //! use std::thread;
 //!
 //! struct MyData {
 //!     items: Vec<i32>,
 //! }
 //!
-//! let cell = Arc::new(PhasedCellSync::new(MyData { items: Vec::new() }));
+//! // Declare a static PhasedCellSync instance
+//! static CELL: PhasedCellSync<MyData> = PhasedCellSync::new(MyData { items: Vec::new() });
 //!
-//! // --- Setup Phase ---
-//! assert_eq!(cell.phase(), Phase::Setup);
-//! {
-//!     let mut data = cell.lock().unwrap();
-//!     data.items.push(10);
-//!     data.items.push(20);
-//! } // Lock is released here
+//! fn main() {
+//!     // --- Setup Phase ---
+//!     assert_eq!(CELL.phase(), Phase::Setup);
+//!     {
+//!         let mut data = CELL.lock().unwrap();
+//!         data.items.push(10);
+//!         data.items.push(20);
+//!     } // Lock is released here
 //!
-//! // --- Transition to Read Phase ---
-//! cell.transition_to_read(|data| {
-//!     data.items.push(30);
-//!     Ok::<(), std::io::Error>(())
-//! }).unwrap();
-//! assert_eq!(cell.phase(), Phase::Read);
+//!     // --- Transition to Read Phase ---
+//!     CELL.transition_to_read(|data| {
+//!         data.items.push(30);
+//!         Ok::<(), std::io::Error>(())
+//!     }).unwrap();
+//!     assert_eq!(CELL.phase(), Phase::Read);
 //!
-//! // --- Read Phase ---
-//! // Now, multiple threads can read the data concurrently.
-//! let mut handles = Vec::new();
-//! for i in 0..3 {
-//!     let cell_clone = Arc::clone(&cell);
-//!     handles.push(thread::spawn(move || {
-//!         let data = cell_clone.read().unwrap();
-//!         println!("Thread {} reads: {:?}", i, data.items);
-//!         assert_eq!(data.items, &[10, 20, 30]);
-//!     }));
+//!     // --- Read Phase ---
+//!     // Now, multiple threads can read the data concurrently.
+//!     let mut handles = Vec::new();
+//!     for i in 0..3 {
+//!         handles.push(thread::spawn(move || {
+//!             let data = CELL.read().unwrap(); // Access the static CELL
+//!             println!("Thread {} reads: {:?}", i, data.items);
+//!             assert_eq!(data.items, &[10, 20, 30]);
+//!         }));
+//!     }
+//!
+//!     for handle in handles {
+//!         handle.join().unwrap();
+//!     }
+//!
+//!     // --- Transition to Cleanup Phase ---
+//!     CELL.transition_to_cleanup(|data| {
+//!         println!("Cleaning up. Final item: {:?}", data.items.pop());
+//!         Ok::<(), std::io::Error>(())
+//!     }).unwrap();
+//!     assert_eq!(CELL.phase(), Phase::Cleanup);
 //! }
-//!
-//! for handle in handles {
-//!     handle.join().unwrap();
-//! }
-//!
-//! // --- Transition to Cleanup Phase ---
-//! cell.transition_to_cleanup(|data| {
-//!     println!("Cleaning up. Final item: {:?}", data.items.pop());
-//!     Ok::<(), std::io::Error>(())
-//! }).unwrap();
-//! assert_eq!(cell.phase(), Phase::Cleanup);
 //! ```
 //!
 //! # Features
@@ -105,6 +106,7 @@
 //!   which use `tokio::sync`.
 //! - `setup_read_cleanup-graceful`: Enables the `graceful` module, which provides cells with
 //!   graceful shutdown capabilities.
+
 mod errors;
 mod phase;
 mod phased_cell;
