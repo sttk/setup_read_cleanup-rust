@@ -8,9 +8,11 @@ mod phased_cell_sync;
 mod wait_sync;
 
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
 mod phased_cell_async;
 
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
 mod wait_async;
 
 use std::{cell, marker, sync::atomic};
@@ -54,6 +56,7 @@ pub struct GracefulWaitSync {
 /// designed for `tokio`-based applications. It uses `tokio::sync::Mutex` for non-blocking
 /// synchronization and supports graceful shutdown.
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
 pub struct GracefulPhasedCellAsync<T: Send + Sync> {
     phase: atomic::AtomicU8,
     wait: GracefulWaitAsync,
@@ -67,6 +70,7 @@ pub struct GracefulPhasedCellAsync<T: Send + Sync> {
 /// `GracefulWaitAsync` is used by `GracefulPhasedCellAsync` to await the completion
 /// of all read operations before cleanup.
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
 pub struct GracefulWaitAsync {
     counter: atomic::AtomicUsize,
     notify: tokio::sync::Notify,

@@ -107,12 +107,15 @@
 //! - `setup_read_cleanup-graceful`: Enables the `graceful` module, which provides cells with
 //!   graceful shutdown capabilities.
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 mod errors;
 mod phase;
 mod phased_cell;
 mod phased_cell_sync;
 
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
 mod phased_cell_async;
 
 /// A module for graceful shutdown of phased cells.
@@ -121,6 +124,7 @@ mod phased_cell_async;
 /// to support graceful shutdown, allowing ongoing operations to complete before
 /// transitioning to the `Cleanup` phase.
 #[cfg(feature = "setup_read_cleanup-graceful")]
+#[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-graceful")))]
 pub mod graceful;
 
 use std::{cell, error, marker, sync::atomic};
@@ -172,6 +176,7 @@ pub enum PhasedErrorKind {
 
     /// An error indicating a timeout occurred while waiting for a graceful shutdown.
     #[cfg(feature = "setup_read_cleanup-graceful")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-graceful")))]
     GracefulWaitTimeout(std::time::Duration),
 }
 
@@ -230,6 +235,7 @@ pub struct StdMutexGuard<'mutex, T> {
 /// contexts using `tokio`. It leverages a `tokio::sync::Mutex` to provide asynchronous,
 /// non-blocking locking, making it suitable for use in async applications.
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
 pub struct PhasedCellAsync<T: Send + Sync> {
     phase: atomic::AtomicU8,
     data_mutex: tokio::sync::Mutex<Option<T>>,
@@ -241,6 +247,7 @@ pub struct PhasedCellAsync<T: Send + Sync> {
 ///
 /// When this structure is dropped (falls out of scope), the lock will be released.
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
 pub struct TokioMutexGuard<'mutex, T> {
     inner: tokio::sync::MutexGuard<'mutex, Option<T>>,
 }
