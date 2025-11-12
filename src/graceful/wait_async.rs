@@ -9,6 +9,7 @@ use tokio::{sync, time};
 
 #[allow(clippy::new_without_default)]
 impl GracefulWaitAsync {
+    /// Creates a new `GracefulWaitAsync`.
     pub const fn new() -> Self {
         Self {
             counter: atomic::AtomicUsize::new(0),
@@ -16,10 +17,15 @@ impl GracefulWaitAsync {
         }
     }
 
+    /// Increments the internal counter of active readers.
     pub fn count_up(&self) {
         self.counter.fetch_add(1, atomic::Ordering::AcqRel);
     }
 
+    /// Decrements the internal counter of active readers.
+    ///
+    /// If the counter becomes zero and the provided closure `f` returns true,
+    /// it notifies waiting tasks.
     pub fn count_down<F>(&self, f: F)
     where
         F: Fn() -> bool,
@@ -48,6 +54,11 @@ impl GracefulWaitAsync {
         }
     }
 
+    /// Asynchronously waits until all active readers have finished, or until the timeout is reached.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the wait times out.
     pub async fn wait_gracefully_async(
         &self,
         timeout: time::Duration,

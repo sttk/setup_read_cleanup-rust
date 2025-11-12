@@ -12,6 +12,15 @@ unsafe impl<T: Send + Sync> Sync for GracefulPhasedCellSync<T> {}
 unsafe impl<T: Send + Sync> Send for GracefulPhasedCellSync<T> {}
 
 impl<T: Send + Sync> GracefulPhasedCellSync<T> {
+    /// Creates a new `GracefulPhasedCellSync` in the `Setup` phase, containing the provided data.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use setup_read_cleanup::graceful::GracefulPhasedCellSync;
+    ///
+    /// let cell = GracefulPhasedCellSync::new(10);
+    /// ```
     pub const fn new(data: T) -> Self {
         Self {
             wait: GracefulWaitSync::new(),
@@ -22,16 +31,48 @@ impl<T: Send + Sync> GracefulPhasedCellSync<T> {
         }
     }
 
+    /// Returns the current phase of the cell with relaxed memory ordering.
+    ///
+    /// This method is faster than `phase` but provides weaker memory ordering guarantees.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use setup_read_cleanup::{Phase, graceful::GracefulPhasedCellSync};
+    ///
+    /// let cell = GracefulPhasedCellSync::new(10);
+    /// assert_eq!(cell.phase_relaxed(), Phase::Setup);
+    /// ```
     pub fn phase_relaxed(&self) -> Phase {
         let phase = self.phase.load(atomic::Ordering::Relaxed);
         u8_to_phase(phase)
     }
 
+    /// Returns the current phase of the cell with acquire memory ordering.
+    ///
+    /// This method provides stronger memory ordering guarantees than `phase_relaxed`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use setup_read_cleanup::{Phase, graceful::GracefulPhasedCellSync};
+    ///
+    /// let cell = GracefulPhasedCellSync::new(10);
+    /// assert_eq!(cell.phase(), Phase::Setup);
+    /// ```
     pub fn phase(&self) -> Phase {
         let phase = self.phase.load(atomic::Ordering::Acquire);
         u8_to_phase(phase)
     }
 
+    /// Returns a reference to the contained data with relaxed memory ordering.
+    ///
+    /// This method is only successful if the cell is in the `Read` phase.
+    /// It increments the internal counter to track active readers for graceful shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cell is not in the `Read` phase or the data is unavailable.
     pub fn read_relaxed(&self) -> Result<&T, PhasedError> {
         let phase = self.phase.load(atomic::Ordering::Relaxed);
         if phase != PHASE_READ {
@@ -52,6 +93,14 @@ impl<T: Send + Sync> GracefulPhasedCellSync<T> {
         }
     }
 
+    /// Returns a reference to the contained data with acquire memory ordering.
+    ///
+    /// This method is only successful if the cell is in the `Read` phase.
+    /// It increments the internal counter to track active readers for graceful shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cell is not in the `Read` phase or the data is unavailable.
     pub fn read(&self) -> Result<&T, PhasedError> {
         let phase = self.phase.load(atomic::Ordering::Acquire);
         if phase != PHASE_READ {
@@ -72,11 +121,23 @@ impl<T: Send + Sync> GracefulPhasedCellSync<T> {
         }
     }
 
+    /// Signals that a read operation has finished.
+    ///
+    /// This decrements the internal counter of active readers.
     pub fn finish_reading(&self) {
         self.wait
             .count_down(|| self.phase.load(atomic::Ordering::Acquire) == PHASE_READ_TO_CLEANUP);
     }
 
+    /// Transitions the cell to the `Cleanup` phase gracefully.
+    ///
+    /// This method waits for all active read operations to complete before executing
+    /// the provided closure `f` and moving to the `Cleanup` phase.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the wait times out, the phase transition fails, the mutex
+    /// is poisoned, or the closure returns an error.
     pub fn transition_to_cleanup<F, E>(
         &self,
         timeout: time::Duration,
@@ -209,6 +270,15 @@ impl<T: Send + Sync> GracefulPhasedCellSync<T> {
         }
     }
 
+    /// Transitions the cell from the `Setup` phase to the `Read` phase.
+    ///
+    /// This method takes a closure `f` which is executed on the contained data
+    /// during the transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cell is not in the `Setup` phase, the mutex is
+    /// poisoned, or if the closure returns an error.
     pub fn transition_to_read<F, E>(&self, mut f: F) -> Result<(), PhasedError>
     where
         F: FnMut(&mut T) -> Result<(), E>,
@@ -273,6 +343,15 @@ impl<T: Send + Sync> GracefulPhasedCellSync<T> {
         }
     }
 
+    /// Locks the cell and returns a guard that allows mutable access to the data.
+    ///
+    /// This method is only successful if the cell is in the `Setup` or `Cleanup` phase.
+    /// The returned guard releases the lock when it is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cell is in the `Read` phase, is transitioning,
+    /// or if the mutex is poisoned.
     pub fn lock(&self) -> Result<StdMutexGuard<'_, T>, PhasedError> {
         let phase = self.phase.load(atomic::Ordering::Acquire);
         match phase {
