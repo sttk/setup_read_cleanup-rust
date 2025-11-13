@@ -23,3 +23,8 @@ full = ["setup_read_cleanup-on-tokio", "setup_read_cleanup-graceful"]
 
 [dev-dependencies]
 once_cell = "1"
+
+[package.metadata.docs.rs]
+all-features = true
+targets = ["x86_64-unknown-linux-gnu"]
+rustdoc-args = ["--cfg", "docsrs"]
