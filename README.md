@@ -16,9 +16,9 @@ The lifecycle is divided into three phases:
 
 This crate offers several cell variants to suit different concurrency needs:
 
--   [`PhasedCell`]: The basic cell. It is `Sync`, allowing it to be shared across threads for reading. However, mutable access via `get_mut_unlocked` is not thread-safe and requires the caller to ensure exclusive access.
--   [`PhasedCellSync`]: A thread-safe version that uses a `std::sync::Mutex` to allow for safe concurrent mutable access during the `Setup` and `Cleanup` phases.
--   [`PhasedCellAsync`]: (Requires the `setup_read_cleanup-on-tokio` feature) An `async` version of `PhasedCellSync` that uses a `tokio::sync::Mutex`.
+-   [`PhasedCell`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/struct.PhasedCell.html): The basic cell. It is `Sync`, allowing it to be shared across threads for reading. However, mutable access via `get_mut_unlocked` is not thread-safe and requires the caller to ensure exclusive access.
+-   [`PhasedCellSync`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/struct.PhasedCellSync.html): A thread-safe version that uses a `std::sync::Mutex` to allow for safe concurrent mutable access during the `Setup` and `Cleanup` phases.
+-   [`PhasedCellAsync`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/struct.PhasedCellAsync.html): (Requires the `setup_read_cleanup-on-tokio` feature) An `async` version of `PhasedCellSync` that uses a `tokio::sync::Mutex`.
 
 ## Graceful Shutdown
 
@@ -28,7 +28,7 @@ The `graceful` module provides wrappers that add graceful shutdown capabilities.
 
 -   [`GracefulPhasedCell`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/graceful/struct.GracefulPhasedCell.html)
 -   [`GracefulPhasedCellSync`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/graceful/struct.GracefulPhasedCellSync.html)
--   [`GracefulPhasedCellAsync`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/graceful/struct.GracefulPhasedCellAsync.html) (Requires both features)
+-   [`GracefulPhasedCellAsync`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/graceful/struct.GracefulPhasedCellAsync.html) (Requires `setup_read_cleanup-graceful` and `setup_read_cleanup-on-tokio` features)
 
 ## Features
 
