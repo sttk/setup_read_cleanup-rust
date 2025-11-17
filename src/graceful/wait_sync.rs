@@ -6,6 +6,8 @@ use super::{GracefulWaitError, GracefulWaitErrorKind, GracefulWaitSync};
 
 use std::{any, sync, sync::atomic, time};
 
+const MAX_READ_COUNT: usize = (isize::MAX) as usize;
+
 #[allow(clippy::new_without_default)]
 impl GracefulWaitSync {
     /// Creates a new `GracefulWaitSync`.
@@ -19,7 +21,14 @@ impl GracefulWaitSync {
 
     /// Increments the internal counter of active readers.
     pub fn count_up(&self) {
-        self.counter.fetch_add(1, atomic::Ordering::AcqRel);
+        let prev = self.counter.fetch_add(1, atomic::Ordering::AcqRel);
+        assert!(
+            prev < MAX_READ_COUNT,
+            "{}::{} : {}",
+            any::type_name::<GracefulWaitSync>(),
+            "count_up",
+            "read counter overflow"
+        );
     }
 
     /// Decrements the internal counter of active readers.
