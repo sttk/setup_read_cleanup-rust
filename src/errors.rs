@@ -25,6 +25,11 @@ impl PhasedError {
             source: Some(Box::new(e)),
         }
     }
+
+    /// Gets the phase in which the error occurred.
+    pub fn phase(&self) -> Phase {
+        self.phase
+    }
 }
 
 impl fmt::Debug for PhasedError {
@@ -64,7 +69,7 @@ mod tests_of_phased_error {
             PhasedErrorKind::CannotCallUnlessPhaseRead("method".to_string()),
         );
 
-        assert_eq!(e.phase, Phase::Setup);
+        assert_eq!(e.phase(), Phase::Setup);
         assert_eq!(
             e.kind,
             PhasedErrorKind::CannotCallUnlessPhaseRead("method".to_string())
@@ -81,7 +86,7 @@ mod tests_of_phased_error {
             e0,
         );
 
-        assert_eq!(e.phase, Phase::Setup);
+        assert_eq!(e.phase(), Phase::Setup);
         assert_eq!(
             e.kind,
             PhasedErrorKind::CannotCallUnlessPhaseRead("method".to_string())
