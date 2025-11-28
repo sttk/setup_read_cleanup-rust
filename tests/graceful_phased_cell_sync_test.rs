@@ -58,8 +58,8 @@ mod integration_tests_of_graceful_phased_cell_sync {
                     Ok::<(), MyError>(())
                 }) {
                     assert!(
-                        e.kind == PhasedErrorKind::PhaseIsAlreadyRead
-                            || e.kind == PhasedErrorKind::DuringTransitionToRead
+                        e.kind() == PhasedErrorKind::PhaseIsAlreadyRead
+                            || e.kind() == PhasedErrorKind::DuringTransitionToRead
                     );
                 }
             });
@@ -97,8 +97,8 @@ mod integration_tests_of_graceful_phased_cell_sync {
                     })
                 {
                     assert!(
-                        e.kind == PhasedErrorKind::PhaseIsAlreadyCleanup
-                            || e.kind == PhasedErrorKind::DuringTransitionToCleanup
+                        e.kind() == PhasedErrorKind::PhaseIsAlreadyCleanup
+                            || e.kind() == PhasedErrorKind::DuringTransitionToCleanup
                     );
                 }
             });

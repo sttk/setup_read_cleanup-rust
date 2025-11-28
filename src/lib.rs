@@ -149,14 +149,14 @@ pub enum Phase {
 ///
 /// This enum categorizes the various errors that can arise during phase transitions
 /// or data access, providing specific information about the nature of the failure.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum PhasedErrorKind {
     /// An error indicating that a method was called before or after the `Read` phase.
-    CannotCallUnlessPhaseRead(String),
+    CannotCallUnlessPhaseRead(&'static str),
     /// An error indicating that a method was called during the `Setup` phase.
-    CannotCallOnPhaseSetup(String),
+    CannotCallOnPhaseSetup(&'static str),
     /// An error indicating that a method was called during the `Read` phase.
-    CannotCallOnPhaseRead(String),
+    CannotCallOnPhaseRead(&'static str),
     /// An error indicating that the internal data is not available.
     InternalDataUnavailable,
     /// An error indicating that the phase is already `Read`.
@@ -186,8 +186,7 @@ pub enum PhasedErrorKind {
 /// optional source error for more context.
 pub struct PhasedError {
     phase: Phase,
-    /// The kind of error that occurred.
-    pub kind: PhasedErrorKind,
+    kind: PhasedErrorKind,
     source: Option<Box<dyn error::Error + Send + Sync>>,
 }
 

@@ -168,7 +168,7 @@ mod graceful_wait_sync {
 
         if let Err(e) = wait.wait_gracefully(std::time::Duration::from_secs(1)) {
             assert_eq!(
-                e.kind,
+                e.kind(),
                 GracefulWaitErrorKind::TimedOut(std::time::Duration::from_secs(1)),
             );
         } else {

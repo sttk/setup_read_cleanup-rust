@@ -77,7 +77,7 @@ pub struct GracefulWaitAsync {
 }
 
 /// An enumeration of possible error kinds that can occur during a graceful wait.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum GracefulWaitErrorKind {
     /// An error indicating that the wait timed out.
     TimedOut(std::time::Duration),
@@ -87,6 +87,5 @@ pub enum GracefulWaitErrorKind {
 
 /// A structure representing an error that occurred during a graceful wait.
 pub struct GracefulWaitError {
-    /// The kind of error that occurred.
-    pub kind: GracefulWaitErrorKind,
+    kind: GracefulWaitErrorKind,
 }

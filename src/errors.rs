@@ -6,6 +6,12 @@ use crate::{Phase, PhasedError, PhasedErrorKind};
 
 use std::{any, error, fmt};
 
+pub(crate) const METHOD_READ: &'static str = "read";
+pub(crate) const METHOD_READ_RELAXED: &'static str = "read_relaxed";
+pub(crate) const METHOD_GET_MUT_UNLOCKED: &'static str = "get_mut_unlocked";
+pub(crate) const METHOD_LOCK: &'static str = "lock";
+pub(crate) const METHOD_LOCK_ASYNC: &'static str = "lock_async";
+
 impl PhasedError {
     pub(crate) fn new(phase: Phase, kind: PhasedErrorKind) -> Self {
         Self {
@@ -29,6 +35,11 @@ impl PhasedError {
     /// Gets the phase in which the error occurred.
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    /// Gets the kind of error that occurred.
+    pub fn kind(&self) -> PhasedErrorKind {
+        self.kind
     }
 }
 
@@ -66,14 +77,11 @@ mod tests_of_phased_error {
     fn test_new() {
         let e = PhasedError::new(
             Phase::Setup,
-            PhasedErrorKind::CannotCallUnlessPhaseRead("method".to_string()),
+            PhasedErrorKind::CannotCallUnlessPhaseRead("read"),
         );
 
         assert_eq!(e.phase(), Phase::Setup);
-        assert_eq!(
-            e.kind,
-            PhasedErrorKind::CannotCallUnlessPhaseRead("method".to_string())
-        );
+        assert_eq!(e.kind(), PhasedErrorKind::CannotCallUnlessPhaseRead("read"));
         assert!(e.source().is_none());
     }
 
@@ -82,14 +90,14 @@ mod tests_of_phased_error {
         let e0 = std::io::Error::new(std::io::ErrorKind::Interrupted, "oh no!");
         let e = PhasedError::with_source(
             Phase::Setup,
-            PhasedErrorKind::CannotCallUnlessPhaseRead("method".to_string()),
+            PhasedErrorKind::CannotCallUnlessPhaseRead("read_relaxed"),
             e0,
         );
 
         assert_eq!(e.phase(), Phase::Setup);
         assert_eq!(
-            e.kind,
-            PhasedErrorKind::CannotCallUnlessPhaseRead("method".to_string())
+            e.kind(),
+            PhasedErrorKind::CannotCallUnlessPhaseRead("read_relaxed"),
         );
         match e.source() {
             Some(ee) => match ee.downcast_ref::<std::io::Error>() {
@@ -106,39 +114,39 @@ mod tests_of_phased_error {
     fn test_debug() {
         let e = PhasedError::new(
             Phase::Setup,
-            PhasedErrorKind::CannotCallUnlessPhaseRead("method".to_string()),
+            PhasedErrorKind::CannotCallUnlessPhaseRead("method"),
         );
         assert_eq!(format!("{:?}", e), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallUnlessPhaseRead(\"method\") }");
 
         let e0 = std::io::Error::new(std::io::ErrorKind::Interrupted, "oh no!");
         let e = PhasedError::with_source(
             Phase::Setup,
-            PhasedErrorKind::CannotCallUnlessPhaseRead("method".to_string()),
+            PhasedErrorKind::CannotCallUnlessPhaseRead("lock_async"),
             e0,
         );
-        assert_eq!(format!("{:?}", e), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallUnlessPhaseRead(\"method\"), source: Custom { kind: Interrupted, error: \"oh no!\" } }");
+        assert_eq!(format!("{:?}", e), "setup_read_cleanup::PhasedError { phase: Setup, kind: CannotCallUnlessPhaseRead(\"lock_async\"), source: Custom { kind: Interrupted, error: \"oh no!\" } }");
     }
 
     #[test]
     fn test_display() {
         let e = PhasedError::new(
             Phase::Setup,
-            PhasedErrorKind::CannotCallUnlessPhaseRead("method".to_string()),
+            PhasedErrorKind::CannotCallUnlessPhaseRead("lock"),
         );
         assert_eq!(
             format!("{}", e),
-            "[Setup] CannotCallUnlessPhaseRead(\"method\")"
+            "[Setup] CannotCallUnlessPhaseRead(\"lock\")"
         );
 
         let e0 = std::io::Error::new(std::io::ErrorKind::Interrupted, "oh no!");
         let e = PhasedError::with_source(
             Phase::Setup,
-            PhasedErrorKind::CannotCallUnlessPhaseRead("method".to_string()),
+            PhasedErrorKind::CannotCallUnlessPhaseRead("lock"),
             e0,
         );
         assert_eq!(
             format!("{}", e),
-            "[Setup] CannotCallUnlessPhaseRead(\"method\")"
+            "[Setup] CannotCallUnlessPhaseRead(\"lock\")"
         );
     }
 }
