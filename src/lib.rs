@@ -135,7 +135,7 @@ use std::{cell, error, marker, sync::atomic};
 /// 1. `Setup`: The initial phase where the data is constructed and initialized.
 /// 2. `Read`: The main operational phase where the data is accessed for read-only operations.
 /// 3. `Cleanup`: The final phase where the data is deconstructed and resources are released.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Phase {
     /// The initial phase for setting up the data.
     Setup,
@@ -185,8 +185,7 @@ pub enum PhasedErrorKind {
 /// It contains the phase in which the error occurred, the kind of error, and an
 /// optional source error for more context.
 pub struct PhasedError {
-    /// The phase in which the error occurred.
-    pub phase: Phase,
+    phase: Phase,
     /// The kind of error that occurred.
     pub kind: PhasedErrorKind,
     source: Option<Box<dyn error::Error + Send + Sync>>,
