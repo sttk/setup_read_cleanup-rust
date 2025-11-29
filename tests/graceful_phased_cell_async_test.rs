@@ -64,8 +64,8 @@ mod integration_tests_of_graceful_phased_cell_async {
                     .await
                 {
                     assert!(
-                        e.kind == PhasedErrorKind::DuringTransitionToRead
-                            || e.kind == PhasedErrorKind::PhaseIsAlreadyRead,
+                        e.kind() == PhasedErrorKind::DuringTransitionToRead
+                            || e.kind() == PhasedErrorKind::PhaseIsAlreadyRead,
                     )
                 }
             });
@@ -104,8 +104,8 @@ mod integration_tests_of_graceful_phased_cell_async {
                     .await
                 {
                     assert!(
-                        e.kind == PhasedErrorKind::PhaseIsAlreadyCleanup
-                            || e.kind == PhasedErrorKind::DuringTransitionToCleanup
+                        e.kind() == PhasedErrorKind::PhaseIsAlreadyCleanup
+                            || e.kind() == PhasedErrorKind::DuringTransitionToCleanup
                     );
                 }
             });

@@ -155,7 +155,7 @@ mod graceful_wait_async {
             .await
         {
             assert_eq!(
-                e.kind,
+                e.kind(),
                 GracefulWaitErrorKind::TimedOut(time::Duration::from_secs(1),)
             );
         } else {

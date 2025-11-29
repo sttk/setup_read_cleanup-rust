@@ -3,10 +3,11 @@
 // See the file LICENSE in this distribution for more details.
 
 use super::{GracefulPhasedCell, GracefulWaitErrorKind, GracefulWaitSync};
+use crate::errors::{METHOD_GET_MUT_UNLOCKED, METHOD_READ, METHOD_READ_RELAXED};
 use crate::phase::*;
 use crate::{Phase, PhasedError, PhasedErrorKind};
 
-use std::{any, cell, error, marker, sync::atomic, time};
+use std::{cell, error, marker, sync::atomic, time};
 
 unsafe impl<T: Send + Sync> Sync for GracefulPhasedCell<T> {}
 unsafe impl<T: Send + Sync> Send for GracefulPhasedCell<T> {}
@@ -77,7 +78,7 @@ impl<T: Send + Sync> GracefulPhasedCell<T> {
         if phase != PHASE_READ {
             return Err(PhasedError::new(
                 u8_to_phase(phase),
-                PhasedErrorKind::CannotCallUnlessPhaseRead(Self::method_name("read_relaxed")),
+                PhasedErrorKind::CannotCallUnlessPhaseRead(METHOD_READ_RELAXED),
             ));
         }
 
@@ -99,7 +100,7 @@ impl<T: Send + Sync> GracefulPhasedCell<T> {
         if phase != PHASE_READ {
             return Err(PhasedError::new(
                 u8_to_phase(phase),
-                PhasedErrorKind::CannotCallUnlessPhaseRead(Self::method_name("read")),
+                PhasedErrorKind::CannotCallUnlessPhaseRead(METHOD_READ),
             ));
         }
 
@@ -255,7 +256,7 @@ impl<T: Send + Sync> GracefulPhasedCell<T> {
         match self.phase.load(atomic::Ordering::Acquire) {
             PHASE_READ => Err(PhasedError::new(
                 u8_to_phase(PHASE_READ),
-                PhasedErrorKind::CannotCallOnPhaseRead(Self::method_name("get_mut_unlocked")),
+                PhasedErrorKind::CannotCallOnPhaseRead(METHOD_GET_MUT_UNLOCKED),
             )),
             PHASE_SETUP_TO_READ => Err(PhasedError::new(
                 u8_to_phase(PHASE_SETUP_TO_READ),
@@ -274,11 +275,6 @@ impl<T: Send + Sync> GracefulPhasedCell<T> {
                 Ok(data)
             }
         }
-    }
-
-    #[inline]
-    fn method_name(m: &str) -> String {
-        format!("{}::{}", any::type_name::<GracefulPhasedCell<T>>(), m)
     }
 
     #[inline]
@@ -481,10 +477,10 @@ mod tests_of_phased_cell {
         assert_eq!(cell.phase_relaxed(), Phase::Setup);
 
         if let Err(e) = cell.read_relaxed() {
-            assert_eq!(e.phase, Phase::Setup);
+            assert_eq!(e.phase(), Phase::Setup);
             assert_eq!(
-                e.kind,
-                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::graceful::GracefulPhasedCell<setup_read_cleanup::graceful::phased_cell::tests_of_phased_cell::MyStruct>::read_relaxed".to_string())
+                e.kind(),
+                PhasedErrorKind::CannotCallUnlessPhaseRead(METHOD_READ_RELAXED),
             );
         } else {
             panic!();
@@ -506,10 +502,10 @@ mod tests_of_phased_cell {
         }
 
         if let Err(e) = cell.read_relaxed() {
-            assert_eq!(e.phase, Phase::Cleanup);
+            assert_eq!(e.phase(), Phase::Cleanup);
             assert_eq!(
-                e.kind,
-                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::graceful::GracefulPhasedCell<setup_read_cleanup::graceful::phased_cell::tests_of_phased_cell::MyStruct>::read_relaxed".to_string())
+                e.kind(),
+                PhasedErrorKind::CannotCallUnlessPhaseRead(METHOD_READ_RELAXED),
             );
         } else {
             panic!();
@@ -525,10 +521,10 @@ mod tests_of_phased_cell {
         assert_eq!(cell.phase(), Phase::Setup);
 
         if let Err(e) = cell.read() {
-            assert_eq!(e.phase, Phase::Setup);
+            assert_eq!(e.phase(), Phase::Setup);
             assert_eq!(
-                e.kind,
-                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::graceful::GracefulPhasedCell<setup_read_cleanup::graceful::phased_cell::tests_of_phased_cell::MyStruct>::read".to_string())
+                e.kind(),
+                PhasedErrorKind::CannotCallUnlessPhaseRead(METHOD_READ),
             );
         } else {
             panic!();
@@ -550,10 +546,10 @@ mod tests_of_phased_cell {
         }
 
         if let Err(e) = cell.read() {
-            assert_eq!(e.phase, Phase::Cleanup);
+            assert_eq!(e.phase(), Phase::Cleanup);
             assert_eq!(
-                e.kind,
-                PhasedErrorKind::CannotCallUnlessPhaseRead("setup_read_cleanup::graceful::GracefulPhasedCell<setup_read_cleanup::graceful::phased_cell::tests_of_phased_cell::MyStruct>::read".to_string())
+                e.kind(),
+                PhasedErrorKind::CannotCallUnlessPhaseRead(METHOD_READ),
             );
         } else {
             panic!();
@@ -573,10 +569,10 @@ mod tests_of_phased_cell {
         }
 
         if let Err(e) = cell.get_mut_unlocked() {
-            assert_eq!(e.phase, Phase::Read);
+            assert_eq!(e.phase(), Phase::Read);
             assert_eq!(
-                e.kind,
-                PhasedErrorKind::CannotCallOnPhaseRead("setup_read_cleanup::graceful::GracefulPhasedCell<setup_read_cleanup::graceful::phased_cell::tests_of_phased_cell::MyStruct>::get_mut_unlocked".to_string()),
+                e.kind(),
+                PhasedErrorKind::CannotCallOnPhaseRead(METHOD_GET_MUT_UNLOCKED),
             );
         } else {
             panic!();
@@ -596,8 +592,8 @@ mod tests_of_phased_cell {
         }
 
         if let Err(e) = cell.transition_to_read(|_data| Ok::<(), MyError>(())) {
-            assert_eq!(e.phase, Phase::Read);
-            assert_eq!(e.kind, PhasedErrorKind::PhaseIsAlreadyRead);
+            assert_eq!(e.phase(), Phase::Read);
+            assert_eq!(e.kind(), PhasedErrorKind::PhaseIsAlreadyRead);
         } else {
             panic!();
         }
@@ -622,8 +618,8 @@ mod tests_of_phased_cell {
         }
 
         if let Err(e) = cell.transition_to_read(|_data| Ok::<(), MyError>(())) {
-            assert_eq!(e.phase, Phase::Cleanup);
-            assert_eq!(e.kind, PhasedErrorKind::PhaseIsAlreadyCleanup);
+            assert_eq!(e.phase(), Phase::Cleanup);
+            assert_eq!(e.kind(), PhasedErrorKind::PhaseIsAlreadyCleanup);
         } else {
             panic!();
         }
@@ -650,8 +646,8 @@ mod tests_of_phased_cell {
         if let Err(e) =
             cell.transition_to_cleanup(time::Duration::ZERO, |_data| Ok::<(), MyError>(()))
         {
-            assert_eq!(e.phase, Phase::Cleanup);
-            assert_eq!(e.kind, PhasedErrorKind::PhaseIsAlreadyCleanup);
+            assert_eq!(e.phase(), Phase::Cleanup);
+            assert_eq!(e.kind(), PhasedErrorKind::PhaseIsAlreadyCleanup);
         } else {
             panic!();
         }
@@ -682,7 +678,7 @@ mod tests_of_phased_cell {
         std::thread::sleep(time::Duration::from_millis(100));
 
         if let Err(e) = cell.get_mut_unlocked() {
-            assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToRead);
+            assert_eq!(e.kind(), PhasedErrorKind::DuringTransitionToRead);
         } else {
             panic!();
         }
@@ -719,7 +715,7 @@ mod tests_of_phased_cell {
         std::thread::sleep(time::Duration::from_millis(100));
 
         if let Err(e) = cell.get_mut_unlocked() {
-            assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
+            assert_eq!(e.kind(), PhasedErrorKind::DuringTransitionToCleanup);
         } else {
             panic!();
         }
@@ -758,7 +754,7 @@ mod tests_of_phased_cell {
         std::thread::sleep(time::Duration::from_millis(100));
 
         if let Err(e) = cell.get_mut_unlocked() {
-            assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
+            assert_eq!(e.kind(), PhasedErrorKind::DuringTransitionToCleanup);
         } else {
             panic!();
         }
@@ -779,7 +775,7 @@ mod tests_of_phased_cell {
             std::thread::sleep(time::Duration::from_secs(1));
             Err(MyError {})
         }) {
-            match e.kind {
+            match e.kind() {
                 PhasedErrorKind::FailToRunClosureDuringTransitionToRead => {}
                 _ => panic!("{e:?}"),
             }
@@ -807,7 +803,7 @@ mod tests_of_phased_cell {
                     std::thread::sleep(time::Duration::from_secs(1));
                     Ok::<(), MyError>(())
                 }) {
-                    match e.kind {
+                    match e.kind() {
                         PhasedErrorKind::DuringTransitionToRead => {}
                         _ => panic!("{e:?}"),
                     }
@@ -845,7 +841,7 @@ mod tests_of_phased_cell {
         let cell_clone = Arc::clone(&cell);
         let handler = std::thread::spawn(move || {
             if let Err(e) = cell_clone.transition_to_read(|_data| Ok::<(), MyError>(())) {
-                match e.kind {
+                match e.kind() {
                     PhasedErrorKind::PhaseIsAlreadyCleanup => {}
                     _ => panic!("{e:?}"),
                 }
@@ -889,7 +885,7 @@ mod tests_of_phased_cell {
             if let Err(e) = cell_clone
                 .transition_to_cleanup(time::Duration::ZERO, |_data| Ok::<(), MyError>(()))
             {
-                assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToRead);
+                assert_eq!(e.kind(), PhasedErrorKind::DuringTransitionToRead);
             } else {
                 panic!();
             }
@@ -930,7 +926,7 @@ mod tests_of_phased_cell {
             if let Err(e) = cell_clone
                 .transition_to_cleanup(time::Duration::ZERO, |_data| Ok::<(), MyError>(()))
             {
-                assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
+                assert_eq!(e.kind(), PhasedErrorKind::DuringTransitionToCleanup);
             } else {
                 panic!();
             }
@@ -975,7 +971,7 @@ mod tests_of_phased_cell {
             if let Err(e) = cell_clone
                 .transition_to_cleanup(time::Duration::ZERO, |_data| Ok::<(), MyError>(()))
             {
-                assert_eq!(e.kind, PhasedErrorKind::DuringTransitionToCleanup);
+                assert_eq!(e.kind(), PhasedErrorKind::DuringTransitionToCleanup);
             } else {
                 panic!();
             }
@@ -1128,13 +1124,13 @@ mod tests_of_phased_cell {
             assert_eq!(data.vec.as_slice().join(", "), "Hello, World, !!");
             Ok::<(), MyError>(())
         }) {
-            match e.kind {
+            match e.kind() {
                 PhasedErrorKind::GracefulWaitTimeout(tm) => {
                     assert_eq!(tm, time::Duration::from_secs(1));
                 }
                 _ => panic!(),
             }
-            assert_eq!(e.phase, Phase::Cleanup);
+            assert_eq!(e.phase(), Phase::Cleanup);
         } else {
             panic!();
         }
