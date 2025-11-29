@@ -98,7 +98,9 @@ impl<T: Send + Sync> PhasedCellSync<T> {
 
     /// Returns a reference to the contained data with relaxed memory ordering.
     ///
-    /// This method is only successful if the cell is in the `Read` phase.
+    /// This method attempts to return a reference to the contained data immediately without
+    /// waiting.
+    /// It is only successful if the cell is in the `Read` phase.
     /// It provides weaker memory ordering guarantees.
     ///
     /// # Errors
@@ -125,14 +127,57 @@ impl<T: Send + Sync> PhasedCellSync<T> {
 
     /// Returns a reference to the contained data with acquire memory ordering.
     ///
-    /// This method is only successful if the cell is in the `Read` phase.
-    /// It provides stronger memory ordering guarantees.
+    /// This method attempts to return a reference to the contained data immediately without
+    /// waiting.
+    /// It is only successful if the cell is in the `Read` phase.
+    /// It provides stronger memory ordering guarantees than `read_relaxed`.
     ///
     /// # Errors
     ///
     /// Returns an error if the cell is not in the `Read` phase or the data is unavailable.
     pub fn read(&self) -> Result<&T, PhasedError> {
         let phase = self.phase.load(atomic::Ordering::Acquire);
+        if phase != PHASE_READ {
+            return Err(PhasedError::new(
+                u8_to_phase(phase),
+                PhasedErrorKind::CannotCallUnlessPhaseRead(METHOD_READ),
+            ));
+        }
+
+        if let Some(data) = unsafe { &*self.data_cell.get() }.as_ref() {
+            Ok(data)
+        } else {
+            Err(PhasedError::new(
+                u8_to_phase(phase),
+                PhasedErrorKind::InternalDataUnavailable,
+            ))
+        }
+    }
+
+    /// Returns a reference to the contained data with acquire memory ordering.
+    ///
+    /// In contrast to `read`, this method blocks the current thread to wait for the transition to
+    /// complete if the cell is in the process of transitioning from `Setup` to `Read` phase.
+    /// It is only successful if the cell is in the `Read` phase.
+    /// It provides stronger memory ordering guarantees.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cell is not in the `Read` phase after waiting, or the data is
+    /// unavailable, or if the mutex is poisoned while waiting.
+    pub fn read_ready(&self) -> Result<&T, PhasedError> {
+        let mut phase = self.phase.load(atomic::Ordering::Acquire);
+        if phase == PHASE_SETUP_TO_READ {
+            // wait for transitioning to read
+            if self.data_mutex.lock().is_err() {
+                return Err(PhasedError::new(
+                    u8_to_phase(PHASE_SETUP_TO_READ),
+                    PhasedErrorKind::StdMutexIsPoisoned,
+                ));
+            }
+            phase = self.phase.load(atomic::Ordering::Acquire);
+        }
+
         if phase != PHASE_READ {
             return Err(PhasedError::new(
                 u8_to_phase(phase),
@@ -157,7 +202,8 @@ impl<T: Send + Sync> PhasedCellSync<T> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the phase transition fails, the mutex is poisoned, or the closure returns an error.
+    /// Returns an error if the phase transition fails, the mutex is poisoned, or the closure
+    /// returns an error.
     pub fn transition_to_cleanup<F, E>(&self, mut f: F) -> Result<(), PhasedError>
     where
         F: FnMut(&mut T) -> Result<(), E>,
@@ -1190,5 +1236,97 @@ mod tests_of_phased_cell_sync {
             panic!();
         }
         assert_eq!(cell.phase(), Phase::Cleanup);
+    }
+
+    #[test]
+    fn read_ready_waits_for_transition() {
+        let cell = Arc::new(PhasedCellSync::new(MyStruct::new()));
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        let cell_clone = Arc::clone(&cell);
+        let handler = std::thread::spawn(move || {
+            cell_clone
+                .transition_to_read(|_data| {
+                    std::thread::sleep(time::Duration::from_millis(100));
+                    Ok::<(), MyError>(())
+                })
+                .unwrap();
+        });
+
+        std::thread::sleep(time::Duration::from_millis(10));
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        let data = cell.read_ready().unwrap();
+        assert_eq!(cell.phase(), Phase::Read);
+        assert_eq!(data.vec.len(), 0);
+
+        handler.join().unwrap();
+        assert_eq!(cell.phase(), Phase::Read);
+    }
+
+    #[test]
+    fn read_ready_on_read_phase() {
+        let cell = PhasedCellSync::new(MyStruct::new());
+        cell.transition_to_read(|_| Ok::<(), MyError>(())).unwrap();
+        assert_eq!(cell.phase(), Phase::Read);
+
+        let data = cell.read_ready().unwrap();
+        assert_eq!(data.vec.len(), 0);
+    }
+
+    #[test]
+    fn fail_to_read_ready_if_phase_is_setup() {
+        let cell = PhasedCellSync::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        if let Err(e) = cell.read_ready() {
+            assert_eq!(e.phase(), Phase::Setup);
+            assert_eq!(e.kind(), PhasedErrorKind::CannotCallUnlessPhaseRead("read"));
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn fail_to_read_ready_if_phase_is_cleanup() {
+        let cell = PhasedCellSync::new(MyStruct::new());
+        cell.transition_to_cleanup(|_| Ok::<(), MyError>(()))
+            .unwrap();
+        assert_eq!(cell.phase(), Phase::Cleanup);
+
+        if let Err(e) = cell.read_ready() {
+            assert_eq!(e.phase(), Phase::Cleanup);
+            assert_eq!(e.kind(), PhasedErrorKind::CannotCallUnlessPhaseRead("read"));
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn read_ready_returns_error_if_transition_fails() {
+        let cell = Arc::new(PhasedCellSync::new(MyStruct::new()));
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        let cell_clone = Arc::clone(&cell);
+        let handler = std::thread::spawn(move || {
+            cell_clone
+                .transition_to_read(|_data| {
+                    std::thread::sleep(time::Duration::from_millis(100));
+                    Err(MyError {})
+                })
+                .unwrap_err();
+        });
+
+        std::thread::sleep(time::Duration::from_millis(10));
+
+        if let Err(e) = cell.read_ready() {
+            assert_eq!(e.phase(), Phase::Setup);
+            assert_eq!(e.kind(), PhasedErrorKind::CannotCallUnlessPhaseRead("read"));
+        } else {
+            panic!();
+        }
+
+        handler.join().unwrap();
+        assert_eq!(cell.phase(), Phase::Setup);
     }
 }
