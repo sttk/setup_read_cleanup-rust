@@ -101,7 +101,9 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
 
     /// Returns a reference to the contained data with relaxed memory ordering.
     ///
-    /// This method is only successful if the cell is in the `Read` phase.
+    /// This method attempts to return a reference to the contained data immediately without
+    /// waiting.
+    /// It is only successful if the cell is in the `Read` phase.
     /// It provides weaker memory ordering guarantees.
     ///
     /// # Errors
@@ -128,14 +130,52 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
 
     /// Returns a reference to the contained data with acquire memory ordering.
     ///
-    /// This method is only successful if the cell is in the `Read` phase.
-    /// It provides stronger memory ordering guarantees.
+    /// This method attempts to return a reference to the contained data immediately without
+    /// waiting.
+    /// It is only successful if the cell is in the `Read` phase.
+    /// It provides stronger memory ordering guarantees than `read_relaxed`.
     ///
     /// # Errors
     ///
     /// Returns an error if the cell is not in the `Read` phase or the data is unavailable.
     pub fn read(&self) -> Result<&T, PhasedError> {
         let phase = self.phase.load(atomic::Ordering::Acquire);
+        if phase != PHASE_READ {
+            return Err(PhasedError::new(
+                u8_to_phase(phase),
+                PhasedErrorKind::CannotCallUnlessPhaseRead(METHOD_READ),
+            ));
+        }
+
+        if let Some(data) = unsafe { &*self.data_cell.get() }.as_ref() {
+            Ok(data)
+        } else {
+            Err(PhasedError::new(
+                u8_to_phase(phase),
+                PhasedErrorKind::InternalDataUnavailable,
+            ))
+        }
+    }
+
+    /// Returns a reference to the contained data with acquire memory ordering.
+    ///
+    /// In contrast to `read`, this asynchronous method awaits until the cell is in the `Read`
+    /// phase, or until the transition from `Setup` to `Read` phase is complete.
+    /// It is only successful if the cell is in the `Read` phase.
+    /// It provides stronger memory ordering guarantees.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cell is not in the `Read` phase after waiting, or the data is
+    /// unavailable.
+    pub async fn read_ready_async(&self) -> Result<&T, PhasedError> {
+        let mut phase = self.phase.load(atomic::Ordering::Acquire);
+        if phase == PHASE_SETUP_TO_READ {
+            // wait for transitioning to read
+            let _ = self.data_mutex.lock().await;
+            phase = self.phase.load(atomic::Ordering::Acquire);
+        }
+
         if phase != PHASE_READ {
             return Err(PhasedError::new(
                 u8_to_phase(phase),
@@ -1242,5 +1282,105 @@ mod tests_of_phased_cell_async {
             panic!();
         }
         assert_eq!(cell.phase(), Phase::Cleanup);
+    }
+
+    #[tokio::test]
+    async fn read_ready_async_waits_for_transition() {
+        let cell = Arc::new(PhasedCellAsync::new(MyStruct::new()));
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        let cell_clone = Arc::clone(&cell);
+        let handler = tokio::spawn(async move {
+            cell_clone
+                .transition_to_read_async(|_data| {
+                    Box::pin(async {
+                        tokio::time::sleep(time::Duration::from_millis(100)).await;
+                        Ok::<(), MyError>(())
+                    })
+                })
+                .await
+                .unwrap();
+        });
+
+        tokio::time::sleep(time::Duration::from_millis(10)).await;
+
+        let data = cell.read_ready_async().await.unwrap();
+        assert_eq!(cell.phase(), Phase::Read);
+        assert_eq!(data.vec.len(), 0);
+
+        handler.await.unwrap();
+        assert_eq!(cell.phase(), Phase::Read);
+    }
+
+    #[tokio::test]
+    async fn read_ready_async_on_read_phase() {
+        let cell = PhasedCellAsync::new(MyStruct::new());
+        cell.transition_to_read_async(|_| Box::pin(async { Ok::<(), MyError>(()) }))
+            .await
+            .unwrap();
+        assert_eq!(cell.phase(), Phase::Read);
+
+        let data = cell.read_ready_async().await.unwrap();
+        assert_eq!(data.vec.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn fail_to_read_ready_async_if_phase_is_setup() {
+        let cell = PhasedCellAsync::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        if let Err(e) = cell.read_ready_async().await {
+            assert_eq!(e.phase(), Phase::Setup);
+            assert_eq!(e.kind(), PhasedErrorKind::CannotCallUnlessPhaseRead("read"));
+        } else {
+            panic!();
+        }
+    }
+
+    #[tokio::test]
+    async fn fail_to_read_ready_async_if_phase_is_cleanup() {
+        let cell = PhasedCellAsync::new(MyStruct::new());
+        cell.transition_to_cleanup_async(|_| Box::pin(async { Ok::<(), MyError>(()) }))
+            .await
+            .unwrap();
+        assert_eq!(cell.phase(), Phase::Cleanup);
+
+        if let Err(e) = cell.read_ready_async().await {
+            assert_eq!(e.phase(), Phase::Cleanup);
+            assert_eq!(e.kind(), PhasedErrorKind::CannotCallUnlessPhaseRead("read"));
+        } else {
+            panic!();
+        }
+    }
+
+    #[tokio::test]
+    async fn read_ready_async_returns_error_if_transition_fails() {
+        let cell = Arc::new(PhasedCellAsync::new(MyStruct::new()));
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        let cell_clone = Arc::clone(&cell);
+        let handler = tokio::spawn(async move {
+            cell_clone
+                .transition_to_read_async(|_data| {
+                    Box::pin(async {
+                        tokio::time::sleep(time::Duration::from_millis(100)).await;
+                        Err(MyError {})
+                    })
+                })
+                .await
+                .unwrap_err();
+        });
+
+        tokio::time::sleep(time::Duration::from_millis(10)).await;
+
+        if let Err(e) = cell.read_ready_async().await {
+            assert_eq!(e.phase(), Phase::Setup);
+            assert_eq!(e.kind(), PhasedErrorKind::CannotCallUnlessPhaseRead("read"));
+        } else {
+            panic!();
+        }
+
+        handler.await.unwrap();
+        assert_eq!(cell.phase(), Phase::Setup);
     }
 }

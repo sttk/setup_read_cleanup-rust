@@ -6,11 +6,12 @@ use crate::{Phase, PhasedError, PhasedErrorKind};
 
 use std::{any, error, fmt};
 
-pub(crate) const METHOD_READ: &'static str = "read";
-pub(crate) const METHOD_READ_RELAXED: &'static str = "read_relaxed";
-pub(crate) const METHOD_GET_MUT_UNLOCKED: &'static str = "get_mut_unlocked";
-pub(crate) const METHOD_LOCK: &'static str = "lock";
-pub(crate) const METHOD_LOCK_ASYNC: &'static str = "lock_async";
+pub(crate) const METHOD_READ: &str = "read";
+pub(crate) const METHOD_READ_RELAXED: &str = "read_relaxed";
+pub(crate) const METHOD_GET_MUT_UNLOCKED: &str = "get_mut_unlocked";
+pub(crate) const METHOD_LOCK: &str = "lock";
+#[cfg(feature = "setup_read_cleanup-on-tokio")]
+pub(crate) const METHOD_LOCK_ASYNC: &str = "lock_async";
 
 impl PhasedError {
     pub(crate) fn new(phase: Phase, kind: PhasedErrorKind) -> Self {
