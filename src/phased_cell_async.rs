@@ -2,7 +2,6 @@
 // This program is free software under MIT License.
 // See the file LICENSE in this distribution for more details.
 
-use crate::errors::{METHOD_LOCK_ASYNC, METHOD_READ, METHOD_READ_RELAXED};
 use crate::phase::*;
 use crate::{Phase, PhasedCellAsync, PhasedError, PhasedErrorKind, TokioMutexGuard};
 
@@ -114,7 +113,7 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
         if phase != PHASE_READ {
             return Err(PhasedError::new(
                 u8_to_phase(phase),
-                PhasedErrorKind::CannotCallUnlessPhaseRead(METHOD_READ_RELAXED),
+                PhasedErrorKind::CannotCallUnlessPhaseRead("read_relaxed"),
             ));
         }
 
@@ -143,7 +142,7 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
         if phase != PHASE_READ {
             return Err(PhasedError::new(
                 u8_to_phase(phase),
-                PhasedErrorKind::CannotCallUnlessPhaseRead(METHOD_READ),
+                PhasedErrorKind::CannotCallUnlessPhaseRead("read"),
             ));
         }
 
@@ -320,7 +319,7 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
         match phase {
             PHASE_READ => Err(PhasedError::new(
                 u8_to_phase(PHASE_READ),
-                PhasedErrorKind::CannotCallOnPhaseRead(METHOD_LOCK_ASYNC),
+                PhasedErrorKind::CannotCallOnPhaseRead("lock_async"),
             )),
             PHASE_SETUP_TO_READ => Err(PhasedError::new(
                 u8_to_phase(PHASE_SETUP_TO_READ),

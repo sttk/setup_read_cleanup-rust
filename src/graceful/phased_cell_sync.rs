@@ -3,7 +3,6 @@
 // See the file LICENSE in this distribution for more details.
 
 use super::{GracefulPhasedCellSync, GracefulWaitErrorKind, GracefulWaitSync};
-use crate::errors::{METHOD_LOCK, METHOD_READ, METHOD_READ_RELAXED};
 use crate::phase::*;
 use crate::{Phase, PhasedError, PhasedErrorKind, StdMutexGuard};
 
@@ -82,7 +81,7 @@ impl<T: Send + Sync> GracefulPhasedCellSync<T> {
         if phase != PHASE_READ {
             return Err(PhasedError::new(
                 u8_to_phase(phase),
-                PhasedErrorKind::CannotCallUnlessPhaseRead(METHOD_READ_RELAXED),
+                PhasedErrorKind::CannotCallUnlessPhaseRead("read_relaxed"),
             ));
         }
 
@@ -113,7 +112,7 @@ impl<T: Send + Sync> GracefulPhasedCellSync<T> {
         if phase != PHASE_READ {
             return Err(PhasedError::new(
                 u8_to_phase(phase),
-                PhasedErrorKind::CannotCallUnlessPhaseRead(METHOD_READ),
+                PhasedErrorKind::CannotCallUnlessPhaseRead("read"),
             ));
         }
 
@@ -364,7 +363,7 @@ impl<T: Send + Sync> GracefulPhasedCellSync<T> {
         match phase {
             PHASE_READ => Err(PhasedError::new(
                 u8_to_phase(PHASE_READ),
-                PhasedErrorKind::CannotCallOnPhaseRead(METHOD_LOCK),
+                PhasedErrorKind::CannotCallOnPhaseRead("lock"),
             )),
             PHASE_SETUP_TO_READ => Err(PhasedError::new(
                 u8_to_phase(PHASE_SETUP_TO_READ),
