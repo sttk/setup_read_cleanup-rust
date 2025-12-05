@@ -20,11 +20,11 @@ This crate offers several cell variants to suit different concurrency needs:
 -   [`PhasedCellSync`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/struct.PhasedCellSync.html): A thread-safe version that uses a `std::sync::Mutex` to allow for safe concurrent mutable access during the `Setup` and `Cleanup` phases.
 -   [`PhasedCellAsync`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/struct.PhasedCellAsync.html): (Requires the `setup_read_cleanup-on-tokio` feature) An `async` version of `PhasedCellSync` that uses a `tokio::sync::Mutex`.
 
-## Graceful Shutdown
+## Graceful Cleanup
 
 (Requires the `setup_read_cleanup-graceful` feature)
 
-The `graceful` module provides wrappers that add graceful shutdown capabilities. When transitioning to the `Cleanup` phase, these cells will wait for a specified duration for all active read operations to complete.
+The `graceful` module provides wrappers that add graceful cleanup capabilities. When transitioning to the `Cleanup` phase, these cells will wait for a specified duration for all active read operations to complete.
 
 -   [`GracefulPhasedCell`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/graceful/struct.GracefulPhasedCell.html)
 -   [`GracefulPhasedCellSync`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/graceful/struct.GracefulPhasedCellSync.html)
@@ -33,7 +33,7 @@ The `graceful` module provides wrappers that add graceful shutdown capabilities.
 ## Features
 
 -   `setup_read_cleanup-on-tokio`: Enables the `async` cell variants (`PhasedCellAsync`, `GracefulPhasedCellAsync`) which use `tokio::sync`.
--   `setup_read_cleanup-graceful`: Enables the `graceful` module, which provides cells with graceful shutdown capabilities.
+-   `setup_read_cleanup-graceful`: Enables the `graceful` module, which provides cells with graceful cleanup capabilities.
 
 ## Examples
 

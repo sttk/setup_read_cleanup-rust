@@ -68,7 +68,7 @@ impl<T: Send + Sync> GracefulPhasedCell<T> {
     /// Returns a reference to the contained data with relaxed memory ordering.
     ///
     /// This method is only successful if the cell is in the `Read` phase.
-    /// It increments the internal counter to track active readers for graceful shutdown.
+    /// It increments the internal counter to track active readers for graceful cleanup.
     ///
     /// # Errors
     ///
@@ -90,7 +90,7 @@ impl<T: Send + Sync> GracefulPhasedCell<T> {
     /// Returns a reference to the contained data with acquire memory ordering.
     ///
     /// This method is only successful if the cell is in the `Read` phase.
-    /// It increments the internal counter to track active readers for graceful shutdown.
+    /// It increments the internal counter to track active readers for graceful cleanup.
     ///
     /// # Errors
     ///

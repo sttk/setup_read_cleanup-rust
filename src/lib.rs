@@ -32,11 +32,11 @@
 //! - [`PhasedCellAsync`]: (Requires the `setup_read_cleanup-on-tokio` feature) An `async` version
 //!   of `PhasedCellSync` that uses a `tokio::sync::Mutex`.
 //!
-//! ## Graceful Shutdown
+//! ## Graceful Cleanup
 //!
 //! (Requires the `setup_read_cleanup-graceful` feature)
 //!
-//! The `graceful` module provides wrappers that add graceful shutdown capabilities. When
+//! The `graceful` module provides wrappers that add graceful cleanup capabilities. When
 //! transitioning to the `Cleanup` phase, these cells will wait for a specified duration
 //! for all active read operations to complete.
 //!
@@ -105,7 +105,7 @@
 //! - `setup_read_cleanup-on-tokio`: Enables the `async` cell variants (`PhasedCellAsync`, `GracefulPhasedCellAsync`)
 //!   which use `tokio::sync`.
 //! - `setup_read_cleanup-graceful`: Enables the `graceful` module, which provides cells with
-//!   graceful shutdown capabilities.
+//!   graceful cleanup capabilities.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
@@ -118,10 +118,10 @@ mod phased_cell_sync;
 #[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
 mod phased_cell_async;
 
-/// A module for graceful shutdown of phased cells.
+/// A module for graceful cleanup of phased cells.
 ///
 /// This module provides extensions and wrappers for `PhasedCell` and its variants
-/// to support graceful shutdown, allowing ongoing operations to complete before
+/// to support graceful cleanup, allowing ongoing operations to complete before
 /// transitioning to the `Cleanup` phase.
 #[cfg(feature = "setup_read_cleanup-graceful")]
 #[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-graceful")))]
@@ -174,7 +174,7 @@ pub enum PhasedErrorKind {
     /// An error indicating that a `std::sync::Mutex` is poisoned.
     StdMutexIsPoisoned,
 
-    /// An error indicating a timeout occurred while waiting for a graceful shutdown.
+    /// An error indicating a timeout occurred while waiting for a graceful cleanup.
     #[cfg(feature = "setup_read_cleanup-graceful")]
     #[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-graceful")))]
     GracefulWaitTimeout(std::time::Duration),
