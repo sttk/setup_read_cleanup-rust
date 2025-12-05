@@ -40,11 +40,7 @@ pub struct GracefulPhasedCellSync<T: Send + Sync> {
     _marker: marker::PhantomData<T>,
 }
 
-/// A synchronization primitive for graceful cleanup in synchronous contexts.
-///
-/// `GracefulWaitSync` is used by `GracefulPhasedCellSync` to block the cleanup process
-/// until all read operations have completed.
-pub struct GracefulWaitSync {
+pub(crate) struct GracefulWaitSync {
     counter: atomic::AtomicUsize,
     blocker: std::sync::Mutex<bool>,
     condvar: std::sync::Condvar,
@@ -65,27 +61,19 @@ pub struct GracefulPhasedCellAsync<T: Send + Sync> {
     _marker: marker::PhantomData<T>,
 }
 
-/// A synchronization primitive for graceful cleanup in asynchronous contexts.
-///
-/// `GracefulWaitAsync` is used by `GracefulPhasedCellAsync` to await the completion
-/// of all read operations before cleanup.
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
-pub struct GracefulWaitAsync {
+pub(crate) struct GracefulWaitAsync {
     counter: atomic::AtomicUsize,
     notify: tokio::sync::Notify,
 }
 
-/// An enumeration of possible error kinds that can occur during a graceful wait.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum GracefulWaitErrorKind {
-    /// An error indicating that the wait timed out.
+pub(crate) enum GracefulWaitErrorKind {
     TimedOut(std::time::Duration),
-    /// An error indicating that a mutex is poisoned.
     MutexIsPoisoned,
 }
 
-/// A structure representing an error that occurred during a graceful wait.
-pub struct GracefulWaitError {
+pub(crate) struct GracefulWaitError {
     kind: GracefulWaitErrorKind,
 }

@@ -10,11 +10,6 @@ impl GracefulWaitError {
     pub(crate) fn new(kind: GracefulWaitErrorKind) -> Self {
         Self { kind }
     }
-
-    /// The kind of error that occurred.
-    pub fn kind(&self) -> GracefulWaitErrorKind {
-        self.kind
-    }
 }
 
 impl fmt::Debug for GracefulWaitError {
@@ -49,7 +44,7 @@ mod tests_of_graceful_wait_error {
         ));
 
         assert_eq!(
-            e.kind(),
+            e.kind,
             GracefulWaitErrorKind::TimedOut(std::time::Duration::from_secs(1)),
         );
         assert!(e.source().is_none());
