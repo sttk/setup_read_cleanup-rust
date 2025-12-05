@@ -17,9 +17,9 @@ mod wait_async;
 
 use std::{cell, marker, sync::atomic};
 
-/// A gracefully shutdownable, non-thread-safe cell that manages data through distinct `Setup`, `Read`, and `Cleanup` phases.
+/// A gracefully cleanup capable, non-thread-safe cell that manages data through distinct `Setup`, `Read`, and `Cleanup` phases.
 ///
-/// `GracefulPhasedCell` extends `PhasedCell` with graceful shutdown capabilities.
+/// `GracefulPhasedCell` extends `PhasedCell` with graceful cleanup capabilities.
 /// It ensures that all read operations are completed before transitioning to the `Cleanup` phase.
 pub struct GracefulPhasedCell<T: Send + Sync> {
     wait: GracefulWaitSync,
@@ -28,10 +28,10 @@ pub struct GracefulPhasedCell<T: Send + Sync> {
     _marker: marker::PhantomData<T>,
 }
 
-/// A gracefully shutdownable, thread-safe cell that manages data through `Setup`, `Read`, and `Cleanup` phases.
+/// A gracefully cleanup capable, thread-safe cell that manages data through `Setup`, `Read`, and `Cleanup` phases.
 ///
 /// `GracefulPhasedCellSync` is the thread-safe counterpart to `GracefulPhasedCell`.
-/// It uses a `std::sync::Mutex` for synchronization and supports graceful shutdown.
+/// It uses a `std::sync::Mutex` for synchronization and supports graceful cleanup.
 pub struct GracefulPhasedCellSync<T: Send + Sync> {
     phase: atomic::AtomicU8,
     wait: GracefulWaitSync,
@@ -40,7 +40,7 @@ pub struct GracefulPhasedCellSync<T: Send + Sync> {
     _marker: marker::PhantomData<T>,
 }
 
-/// A synchronization primitive for graceful shutdown in synchronous contexts.
+/// A synchronization primitive for graceful cleanup in synchronous contexts.
 ///
 /// `GracefulWaitSync` is used by `GracefulPhasedCellSync` to block the cleanup process
 /// until all read operations have completed.
@@ -50,11 +50,11 @@ pub struct GracefulWaitSync {
     condvar: std::sync::Condvar,
 }
 
-/// An asynchronous, gracefully shutdownable, thread-safe cell.
+/// An asynchronous, gracefully cleanup capable, thread-safe cell.
 ///
 /// `GracefulPhasedCellAsync` is the asynchronous version of `GracefulPhasedCellSync`,
 /// designed for `tokio`-based applications. It uses `tokio::sync::Mutex` for non-blocking
-/// synchronization and supports graceful shutdown.
+/// synchronization and supports graceful cleanup.
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
 pub struct GracefulPhasedCellAsync<T: Send + Sync> {
@@ -65,7 +65,7 @@ pub struct GracefulPhasedCellAsync<T: Send + Sync> {
     _marker: marker::PhantomData<T>,
 }
 
-/// A synchronization primitive for graceful shutdown in asynchronous contexts.
+/// A synchronization primitive for graceful cleanup in asynchronous contexts.
 ///
 /// `GracefulWaitAsync` is used by `GracefulPhasedCellAsync` to await the completion
 /// of all read operations before cleanup.
