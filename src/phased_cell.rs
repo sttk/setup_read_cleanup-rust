@@ -107,7 +107,7 @@ impl<T: Send + Sync> PhasedCell<T> {
     /// Transitions the cell to the `Cleanup` phase.
     ///
     /// This method takes a closure `f` which is executed on the contained data.
-    /// This can be called from the `Setup` or `Read` phase.
+    /// It can be called from either the `Setup` or the `Read` phase.
     ///
     /// # Errors
     ///
@@ -126,17 +126,17 @@ impl<T: Send + Sync> PhasedCell<T> {
                 _ => None,
             },
         ) {
-            Ok(old_phase_cd) => {
-                let current_phase_cd = match old_phase_cd {
+            Ok(old_phase) => {
+                let current_phase = match old_phase {
                     PHASE_READ => PHASE_READ_TO_CLEANUP,
                     _ => PHASE_SETUP_TO_CLEANUP,
                 };
                 let data = unsafe { &mut *self.data_cell.get() };
                 let result_f = f(data);
-                self.change_phase(current_phase_cd, PHASE_CLEANUP);
+                self.change_phase(current_phase, PHASE_CLEANUP);
                 if let Err(e) = result_f {
                     Err(PhasedError::with_source(
-                        u8_to_phase(current_phase_cd),
+                        u8_to_phase(current_phase),
                         PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
                         e,
                     ))
@@ -152,8 +152,8 @@ impl<T: Send + Sync> PhasedCell<T> {
                 u8_to_phase(PHASE_SETUP_TO_READ),
                 PhasedErrorKind::DuringTransitionToRead,
             )),
-            Err(old_phase_cd) => Err(PhasedError::new(
-                u8_to_phase(old_phase_cd),
+            Err(old_phase) => Err(PhasedError::new(
+                u8_to_phase(old_phase),
                 PhasedErrorKind::DuringTransitionToCleanup,
             )),
         }
@@ -179,10 +179,10 @@ impl<T: Send + Sync> PhasedCell<T> {
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
         ) {
-            Ok(old_phase_cd) => {
+            Ok(old_phase) => {
                 let data = unsafe { &mut *self.data_cell.get() };
                 if let Err(e) = f(data) {
-                    self.change_phase(PHASE_SETUP_TO_READ, old_phase_cd);
+                    self.change_phase(PHASE_SETUP_TO_READ, old_phase);
                     Err(PhasedError::with_source(
                         u8_to_phase(PHASE_SETUP_TO_READ),
                         PhasedErrorKind::FailToRunClosureDuringTransitionToRead,
@@ -205,8 +205,8 @@ impl<T: Send + Sync> PhasedCell<T> {
                 u8_to_phase(PHASE_SETUP_TO_READ),
                 PhasedErrorKind::DuringTransitionToRead,
             )),
-            Err(old_phase_cd) => Err(PhasedError::new(
-                u8_to_phase(old_phase_cd),
+            Err(old_phase) => Err(PhasedError::new(
+                u8_to_phase(old_phase),
                 PhasedErrorKind::DuringTransitionToCleanup,
             )),
         }
