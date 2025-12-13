@@ -234,8 +234,8 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
                 u8_to_phase(PHASE_SETUP_TO_READ),
                 PhasedErrorKind::DuringTransitionToRead,
             )),
-            Err(old_phase_cd) => Err(PhasedError::new(
-                u8_to_phase(old_phase_cd),
+            Err(old_phase) => Err(PhasedError::new(
+                u8_to_phase(old_phase),
                 PhasedErrorKind::DuringTransitionToCleanup,
             )),
             Ok(_) => Ok(()), // impossible case.
@@ -262,11 +262,11 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
         ) {
-            Ok(old_phase_cd) => {
+            Ok(old_phase) => {
                 let mut data_opt = self.data_mutex.lock().await;
                 if data_opt.is_some() {
                     if let Err(e) = f(data_opt.as_mut().unwrap()).await {
-                        self.change_phase(PHASE_SETUP_TO_READ, old_phase_cd);
+                        self.change_phase(PHASE_SETUP_TO_READ, old_phase);
                         Err(PhasedError::with_source(
                             u8_to_phase(PHASE_SETUP_TO_READ),
                             PhasedErrorKind::FailToRunClosureDuringTransitionToRead,
@@ -280,7 +280,7 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
                         Ok(())
                     }
                 } else {
-                    self.change_phase(PHASE_SETUP_TO_READ, old_phase_cd);
+                    self.change_phase(PHASE_SETUP_TO_READ, old_phase);
                     Err(PhasedError::new(
                         u8_to_phase(PHASE_SETUP_TO_READ),
                         PhasedErrorKind::InternalDataUnavailable,
@@ -299,8 +299,8 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
                 u8_to_phase(PHASE_SETUP_TO_READ),
                 PhasedErrorKind::DuringTransitionToRead,
             )),
-            Err(old_phase_cd) => Err(PhasedError::new(
-                u8_to_phase(old_phase_cd),
+            Err(old_phase) => Err(PhasedError::new(
+                u8_to_phase(old_phase),
                 PhasedErrorKind::DuringTransitionToCleanup,
             )),
         }

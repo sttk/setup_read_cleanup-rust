@@ -171,13 +171,18 @@ pub enum PhasedErrorKind {
     FailToRunClosureDuringTransitionToRead,
     /// An error indicating that a closure failed to run during the transition to `Cleanup`.
     FailToRunClosureDuringTransitionToCleanup,
-    /// An error indicating that a `std::sync::Mutex` is poisoned.
-    StdMutexIsPoisoned,
+    /// An error indicating that a `std::sync::Mutex` for internal data is poisoned.
+    InternalDataMutexIsPoisoned,
 
     /// An error indicating a timeout occurred while waiting for a graceful cleanup.
     #[cfg(feature = "setup_read_cleanup-graceful")]
     #[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-graceful")))]
     GracefulWaitTimeout(std::time::Duration),
+
+    /// An error indicating that a `std::sync::Mutex` for graceful-wait is poisoned.
+    #[cfg(feature = "setup_read_cleanup-graceful")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-graceful")))]
+    GracefulWaitMutexIsPoisoned,
 }
 
 /// A structure representing an error that occurred within a phased cell.
