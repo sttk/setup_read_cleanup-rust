@@ -107,7 +107,7 @@ impl<T: Send + Sync> PhasedCell<T> {
     /// Transitions the cell to the `Cleanup` phase.
     ///
     /// This method takes a closure `f` which is executed on the contained data.
-    /// This can be called from the `Setup` or `Read` phase.
+    /// It can be called from either the `Setup` or the `Read` phase.
     ///
     /// # Errors
     ///

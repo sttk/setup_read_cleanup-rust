@@ -156,14 +156,13 @@ impl<T: Send + Sync> PhasedCellSync<T> {
     /// Transitions the cell to the `Cleanup` phase.
     ///
     /// This method takes a closure `f` which is executed on the contained data.
-    /// This can be called from the `Setup` or `Read` phase.
+    /// It can be called from either the `Setup` or the `Read` phase.
     ///
     /// # Errors
     ///
     /// Returns an error if the phase transition fails, the mutex is poisoned, or the closure
     /// returns an error.
-    pub fn transition_to_cleanup<F, E>(&self, mut f: F) -> Result<(), PhasedError>
-    where
+        pub fn transition_to_cleanup<F, E>(&self, mut f: F) -> Result<(), PhasedError>    where
         F: FnMut(&mut T) -> Result<(), E>,
         E: error::Error + Send + Sync + 'static,
     {

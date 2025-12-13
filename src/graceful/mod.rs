@@ -11,10 +11,14 @@ mod phased_cell_async;
 
 use std::{cell, marker, sync::atomic};
 
-/// A gracefully cleanup capable, non-thread-safe cell that manages data through distinct `Setup`, `Read`, and `Cleanup` phases.
+/// A `PhasedCell` that supports graceful cleanup and graceful read.
 ///
-/// `GracefulPhasedCell` extends `PhasedCell` with graceful cleanup capabilities.
-/// It ensures that all read operations are completed before transitioning to the `Cleanup` phase.
+/// This cell extends [`PhasedCell`](crate::PhasedCell) with two main capabilities:
+/// 1. **Graceful Cleanup**: It ensures that all ongoing read operations complete before allowing
+///    the cell to fully transition to the `Cleanup` phase.
+/// 2. **Graceful Read**: If a read operation is attempted while the cell is in the
+///    `Setup` phase and transitioning to `Read` (`SetupToRead`), the read operation
+///    will wait for the transition to complete and for the cell to enter the `Read` phase.
 pub struct GracefulPhasedCell<T: Send + Sync> {
     phase: atomic::AtomicU8,
     graceful_counter: atomic::AtomicUsize,
@@ -24,10 +28,15 @@ pub struct GracefulPhasedCell<T: Send + Sync> {
     _marker: marker::PhantomData<T>,
 }
 
-/// A gracefully cleanup capable, thread-safe cell that manages data through `Setup`, `Read`, and `Cleanup` phases.
+/// A thread-safe `PhasedCellSync` that supports graceful cleanup and graceful read.
 ///
-/// `GracefulPhasedCellSync` is the thread-safe counterpart to `GracefulPhasedCell`.
-/// It uses a `std::sync::Mutex` for synchronization and supports graceful cleanup.
+/// This cell is the thread-safe counterpart to [`GracefulPhasedCell`], building upon
+/// [`PhasedCellSync`](crate::PhasedCellSync). It offers:
+/// 1. **Graceful Cleanup**: It ensures that all ongoing read operations complete before allowing
+///    the cell to fully transition to the `Cleanup` phase.
+/// 2. **Graceful Read**: If a read operation is attempted while the cell is in the
+///    `Setup` phase and transitioning to `Read` (`SetupToRead`), the read operation
+///    will wait for the transition to complete and for the cell to enter the `Read` phase.
 pub struct GracefulPhasedCellSync<T: Send + Sync> {
     phase: atomic::AtomicU8,
     graceful_counter: atomic::AtomicUsize,
@@ -38,11 +47,16 @@ pub struct GracefulPhasedCellSync<T: Send + Sync> {
     _marker: marker::PhantomData<T>,
 }
 
-/// An asynchronous, gracefully cleanup capable, thread-safe cell.
+/// An asynchronous, thread-safe `PhasedCellAsync` that supports graceful cleanup and graceful read.
 ///
-/// `GracefulPhasedCellAsync` is the asynchronous version of `GracefulPhasedCellSync`,
-/// designed for `tokio`-based applications. It uses `tokio::sync::Mutex` for non-blocking
-/// synchronization and supports graceful cleanup.
+/// This cell is the asynchronous version of [`GracefulPhasedCellSync`], designed for
+/// `tokio`-based applications and building upon [`PhasedCellAsync`](crate::PhasedCellAsync).
+/// It provides:
+/// 1. **Graceful Cleanup**: It ensures that all ongoing read operations complete before allowing
+///    the cell to fully transition to the `Cleanup` phase.
+/// 2. **Graceful Read**: If a read operation is attempted while the cell is in the
+///    `Setup` phase and transitioning to `Read` (`SetupToRead`), the read operation
+///    will wait for the transition to complete and for the cell to enter the `Read` phase.
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
 pub struct GracefulPhasedCellAsync<T: Send + Sync> {

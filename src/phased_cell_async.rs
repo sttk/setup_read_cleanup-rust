@@ -159,12 +159,11 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
     /// Asynchronously transitions the cell to the `Cleanup` phase.
     ///
     /// This method takes an async closure `f` which is executed on the contained data.
-    /// This can be called from the `Setup` or `Read` phase.
+    /// It can be called from either the `Setup` or the `Read` phase.
     ///
     /// # Errors
     ///
-    /// Returns an error if the phase transition fails or the closure returns an error.
-    pub async fn transition_to_cleanup_async<F, E>(&self, mut f: F) -> Result<(), PhasedError>
+    /// Returns an error if the phase transition fails or the closure returns an error.    pub async fn transition_to_cleanup_async<F, E>(&self, mut f: F) -> Result<(), PhasedError>
     where
         F: FnMut(&mut T) -> Pin<Box<dyn Future<Output = Result<(), E>> + Send>>,
         E: error::Error + Send + Sync + 'static,

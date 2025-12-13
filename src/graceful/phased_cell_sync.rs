@@ -104,14 +104,15 @@ impl<T: Send + Sync> GracefulPhasedCellSync<T> {
     ///
     /// This method attempts to return a reference to the contained data immediately without
     /// waiting.
-    /// It is only successful if the cell is in the `Read` phase. It increments the internal counter
-    /// to track active readers for graceful cleanup.
+    /// It is only successful if the cell is in the `Read` phase.
+    /// If the cell is in a `Setup -> Read` transition, this method will wait until
+    /// the transition is complete and the cell enters the `Read` phase.
+    /// It increments the internal counter to track active readers for graceful cleanup.
     /// It provides stronger memory ordering guarantees than `read_relaxed`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the cell is not in the `Read` phase or the data is unavailable.
-    pub fn read(&self) -> Result<&T, PhasedError> {
+    /// Returns an error if the cell is not in the `Read` phase (after waiting, if applicable) or the data is unavailable.    pub fn read(&self) -> Result<&T, PhasedError> {
         match self.phase.load(atomic::Ordering::Acquire) {
             PHASE_READ => {}
             PHASE_SETUP_TO_READ => {
@@ -146,14 +147,14 @@ impl<T: Send + Sync> GracefulPhasedCellSync<T> {
 
     /// Transitions the cell to the `Cleanup` phase gracefully.
     ///
-    /// This method waits for all active read operations to complete before executing
+    /// This method can be called from either the `Setup` or the `Read` phase.
+    /// It waits for all active read operations to complete before executing
     /// the provided closure `f` and moving to the `Cleanup` phase.
     ///
     /// # Errors
     ///
     /// Returns an error if the wait times out, the phase transition fails, the mutex
-    /// is poisoned, or the closure returns an error.
-    pub fn transition_to_cleanup<F, E>(
+    /// is poisoned, or the closure returns an error.    pub fn transition_to_cleanup<F, E>(
         &self,
         timeout: time::Duration,
         mut f: F,
