@@ -162,7 +162,8 @@ impl<T: Send + Sync> PhasedCellSync<T> {
     ///
     /// Returns an error if the phase transition fails, the mutex is poisoned, or the closure
     /// returns an error.
-        pub fn transition_to_cleanup<F, E>(&self, mut f: F) -> Result<(), PhasedError>    where
+    pub fn transition_to_cleanup<F, E>(&self, mut f: F) -> Result<(), PhasedError>
+    where
         F: FnMut(&mut T) -> Result<(), E>,
         E: error::Error + Send + Sync + 'static,
     {

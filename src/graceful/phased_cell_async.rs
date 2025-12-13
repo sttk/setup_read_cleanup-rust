@@ -81,7 +81,8 @@ impl<T: Send + Sync> GracefulPhasedCellAsync<T> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the cell is not in the `Read` phase or the data is unavailable.    pub fn read_relaxed(&self) -> Result<&T, PhasedError> {
+    /// Returns an error if the cell is not in the `Read` phase or the data is unavailable.
+    pub fn read_relaxed(&self) -> Result<&T, PhasedError> {
         let phase = self.phase.load(atomic::Ordering::Relaxed);
         if phase != PHASE_READ {
             return Err(PhasedError::new(
@@ -113,7 +114,8 @@ impl<T: Send + Sync> GracefulPhasedCellAsync<T> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the cell is not in the `Read` phase (after waiting, if applicable) or the data is unavailable.    pub async fn read_async(&self) -> Result<&T, PhasedError> {
+    /// Returns an error if the cell is not in the `Read` phase (after waiting, if applicable) or the data is unavailable.
+    pub async fn read_async(&self) -> Result<&T, PhasedError> {
         match self.phase.load(atomic::Ordering::Acquire) {
             PHASE_READ => {}
             PHASE_SETUP_TO_READ => {
@@ -155,7 +157,8 @@ impl<T: Send + Sync> GracefulPhasedCellAsync<T> {
     /// # Errors
     ///
     /// Returns an error if the wait times out, the phase transition fails, or the closure returns
-    /// an error.    pub async fn transition_to_cleanup_async<F, E>(
+    /// an error.
+    pub async fn transition_to_cleanup_async<F, E>(
         &self,
         timeout: time::Duration,
         mut f: F,

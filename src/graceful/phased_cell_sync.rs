@@ -112,7 +112,8 @@ impl<T: Send + Sync> GracefulPhasedCellSync<T> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the cell is not in the `Read` phase (after waiting, if applicable) or the data is unavailable.    pub fn read(&self) -> Result<&T, PhasedError> {
+    /// Returns an error if the cell is not in the `Read` phase (after waiting, if applicable) or the data is unavailable.
+    pub fn read(&self) -> Result<&T, PhasedError> {
         match self.phase.load(atomic::Ordering::Acquire) {
             PHASE_READ => {}
             PHASE_SETUP_TO_READ => {
@@ -154,7 +155,8 @@ impl<T: Send + Sync> GracefulPhasedCellSync<T> {
     /// # Errors
     ///
     /// Returns an error if the wait times out, the phase transition fails, the mutex
-    /// is poisoned, or the closure returns an error.    pub fn transition_to_cleanup<F, E>(
+    /// is poisoned, or the closure returns an error.
+    pub fn transition_to_cleanup<F, E>(
         &self,
         timeout: time::Duration,
         mut f: F,
