@@ -17,7 +17,7 @@ use std::{cell, marker, sync::atomic};
 /// 1. **Graceful Cleanup**: It ensures that all ongoing read operations complete before allowing
 ///    the cell to fully transition to the `Cleanup` phase.
 /// 2. **Graceful Read**: If a read operation is attempted while the cell is in the
-///    `Setup` phase and transitioning to `Read` (`SetupToRead`), the read operation
+///    `Setup` phase and transitioning to `Read`, the read operation
 ///    will wait for the transition to complete and for the cell to enter the `Read` phase.
 pub struct GracefulPhasedCell<T: Send + Sync> {
     phase: atomic::AtomicU8,
@@ -35,7 +35,7 @@ pub struct GracefulPhasedCell<T: Send + Sync> {
 /// 1. **Graceful Cleanup**: It ensures that all ongoing read operations complete before allowing
 ///    the cell to fully transition to the `Cleanup` phase.
 /// 2. **Graceful Read**: If a read operation is attempted while the cell is in the
-///    `Setup` phase and transitioning to `Read` (`SetupToRead`), the read operation
+///    `Setup` phase and transitioning to `Read`, the read operation
 ///    will wait for the transition to complete and for the cell to enter the `Read` phase.
 pub struct GracefulPhasedCellSync<T: Send + Sync> {
     phase: atomic::AtomicU8,
@@ -55,7 +55,7 @@ pub struct GracefulPhasedCellSync<T: Send + Sync> {
 /// 1. **Graceful Cleanup**: It ensures that all ongoing read operations complete before allowing
 ///    the cell to fully transition to the `Cleanup` phase.
 /// 2. **Graceful Read**: If a read operation is attempted while the cell is in the
-///    `Setup` phase and transitioning to `Read` (`SetupToRead`), the read operation
+///    `Setup` phase and transitioning to `Read`, the read operation
 ///    will wait for the transition to complete and for the cell to enter the `Read` phase.
 #[cfg(feature = "setup_read_cleanup-on-tokio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
