@@ -14,9 +14,10 @@ categories = ["concurrency", "asynchronous", "rust-patterns"]
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
+futures = { version = "0.3", optional = true }
 
 [features]
-setup_read_cleanup-on-tokio = ["tokio"]
+setup_read_cleanup-on-tokio = ["tokio", "futures"]
 setup_read_cleanup-graceful = []
 default = []
 full = ["setup_read_cleanup-on-tokio", "setup_read_cleanup-graceful"]

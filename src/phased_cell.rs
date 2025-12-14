@@ -112,6 +112,8 @@ impl<T: Send + Sync> PhasedCell<T> {
     /// # Errors
     ///
     /// Returns an error if the phase transition fails or the closure returns an error.
+    /// If the provided closure panics, the cell's phase will be transitioned
+    /// to `Cleanup`, and the panic will be resumed.
     pub fn transition_to_cleanup<F, E>(&self, mut f: F) -> Result<(), PhasedError>
     where
         F: FnMut(&mut T) -> Result<(), E>,
@@ -131,17 +133,21 @@ impl<T: Send + Sync> PhasedCell<T> {
                     PHASE_READ => PHASE_READ_TO_CLEANUP,
                     _ => PHASE_SETUP_TO_CLEANUP,
                 };
+
                 let data = unsafe { &mut *self.data_cell.get() };
-                let result_f = f(data);
+                let result_f = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(data)));
                 self.change_phase(current_phase, PHASE_CLEANUP);
-                if let Err(e) = result_f {
-                    Err(PhasedError::with_source(
-                        u8_to_phase(current_phase),
+
+                match result_f {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(e)) => Err(PhasedError::with_source(
+                        u8_to_phase(PHASE_CLEANUP),
                         PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
                         e,
-                    ))
-                } else {
-                    Ok(())
+                    )),
+                    Err(panic_cause) => {
+                        std::panic::resume_unwind(panic_cause);
+                    }
                 }
             }
             Err(PHASE_CLEANUP) => Err(PhasedError::new(
@@ -167,7 +173,8 @@ impl<T: Send + Sync> PhasedCell<T> {
     /// # Errors
     ///
     /// Returns an error if the cell is not in the `Setup` phase or if the closure
-    /// returns an error.
+    /// returns an error. If the provided closure panics, the cell's phase
+    /// will be reverted to `Setup`, and the panic will be resumed.
     pub fn transition_to_read<F, E>(&self, mut f: F) -> Result<(), PhasedError>
     where
         F: FnMut(&mut T) -> Result<(), E>,
@@ -179,18 +186,27 @@ impl<T: Send + Sync> PhasedCell<T> {
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
         ) {
-            Ok(old_phase) => {
+            Ok(_old_phase) => {
                 let data = unsafe { &mut *self.data_cell.get() };
-                if let Err(e) = f(data) {
-                    self.change_phase(PHASE_SETUP_TO_READ, old_phase);
-                    Err(PhasedError::with_source(
-                        u8_to_phase(PHASE_SETUP_TO_READ),
-                        PhasedErrorKind::FailToRunClosureDuringTransitionToRead,
-                        e,
-                    ))
-                } else {
-                    self.change_phase(PHASE_SETUP_TO_READ, PHASE_READ);
-                    Ok(())
+                let result_f = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(data)));
+
+                match result_f {
+                    Ok(Ok(())) => {
+                        self.change_phase(PHASE_SETUP_TO_READ, PHASE_READ);
+                        Ok(())
+                    }
+                    Ok(Err(e)) => {
+                        self.change_phase(PHASE_SETUP_TO_READ, PHASE_SETUP);
+                        Err(PhasedError::with_source(
+                            u8_to_phase(PHASE_SETUP),
+                            PhasedErrorKind::FailToRunClosureDuringTransitionToRead,
+                            e,
+                        ))
+                    }
+                    Err(cause) => {
+                        self.change_phase(PHASE_SETUP_TO_READ, PHASE_SETUP);
+                        std::panic::resume_unwind(cause);
+                    }
                 }
             }
             Err(PHASE_READ) => Err(PhasedError::new(
@@ -1013,6 +1029,56 @@ mod tests_of_phased_cell {
         } else {
             panic!();
         }
+        assert_eq!(cell.phase(), Phase::Cleanup);
+    }
+
+    #[test]
+    fn panic_during_transition_to_read() {
+        let cell = PhasedCell::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = cell.transition_to_read(|_data| -> Result<(), MyError> {
+                panic!("Panic during transition to read");
+            });
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(cell.phase(), Phase::Setup);
+    }
+
+    #[test]
+    fn panic_during_transition_to_cleanup_from_setup() {
+        let cell = PhasedCell::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = cell.transition_to_cleanup(|_data| -> Result<(), MyError> {
+                panic!("Panic during transition to cleanup");
+            });
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(cell.phase(), Phase::Cleanup);
+    }
+
+    #[test]
+    fn panic_during_transition_to_cleanup_from_read() {
+        let cell = PhasedCell::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        if let Err(e) = cell.transition_to_read(|_data| Ok::<(), MyError>(())) {
+            panic!("{e:?}");
+        }
+        assert_eq!(cell.phase(), Phase::Read);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = cell.transition_to_cleanup(|_data| -> Result<(), MyError> {
+                panic!("Panic during transition to cleanup");
+            });
+        }));
+
+        assert!(result.is_err());
         assert_eq!(cell.phase(), Phase::Cleanup);
     }
 }
