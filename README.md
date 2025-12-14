@@ -12,6 +12,16 @@ The lifecycle is divided into three phases:
 -   **`Read`**: The operational phase. The data can only be accessed immutably. This phase is optimized for concurrent, lock-free reads.
 -   **`Cleanup`**: The final phase. The data can be mutably accessed again for deconstruction or resource cleanup.
 
+### Panic Handling in Transition Closures
+
+The `transition_to_read` and `transition_to_cleanup` methods execute user-provided closures. If a panic occurs within these closures, `PhasedCell` ensures the following behavior across all its variants:
+
+-   **`transition_to_read`**: If the closure panics, the cell's phase is safely reverted to `Setup`.
+-   **`transition_to_cleanup`**: If the closure panics, the cell's phase is safely transitioned to `Cleanup`.
+
+In both cases, any acquired internal mutexes are released before the panic is resumed, preventing deadlocks. The original panic is re-propagated, maintaining Rust's panic-safety guarantees while ensuring internal consistency.
+
+
 ## Cell Variants
 
 This crate offers several cell variants to suit different concurrency needs:
@@ -20,11 +30,20 @@ This crate offers several cell variants to suit different concurrency needs:
 -   [`PhasedCellSync`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/struct.PhasedCellSync.html): A thread-safe version that uses a `std::sync::Mutex` to allow for safe concurrent mutable access during the `Setup` and `Cleanup` phases.
 -   [`PhasedCellAsync`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/struct.PhasedCellAsync.html): (Requires the `setup_read_cleanup-on-tokio` feature) An `async` version of `PhasedCellSync` that uses a `tokio::sync::Mutex`.
 
-## Graceful Cleanup
+## Graceful Features
 
 (Requires the `setup_read_cleanup-graceful` feature)
 
-The `graceful` module provides wrappers that add graceful cleanup capabilities. When transitioning to the `Cleanup` phase, these cells will wait for a specified duration for all active read operations to complete.
+The `graceful` module provides wrappers that add graceful capabilities to phased cells:
+
+-   **Graceful Cleanup**: It ensures that all ongoing read operations complete before allowing
+    the cell to fully transition to the `Cleanup` phase.
+-   **Graceful Read**: If a read operation is attempted while the cell is in the
+    `Setup` phase and transitioning to `Read`, the read operation
+    will wait for the transition to complete and for the cell to enter the `Read` phase.
+
+It provides the following cells:
+
 
 -   [`GracefulPhasedCell`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/graceful/struct.GracefulPhasedCell.html)
 -   [`GracefulPhasedCellSync`](https://docs.rs/setup_read_cleanup/latest/setup_read_cleanup/graceful/struct.GracefulPhasedCellSync.html)
