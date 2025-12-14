@@ -6,9 +6,10 @@ use super::GracefulPhasedCellAsync;
 use crate::phase::*;
 use crate::{Phase, PhasedError, PhasedErrorKind, TokioMutexGuard};
 
+use futures::future::FutureExt;
 use std::future::Future;
 use std::pin::Pin;
-use std::{any, cell, error, marker, sync::atomic};
+use std::{any, cell, error, marker, panic, sync::atomic};
 use tokio::{sync, time};
 
 const MAX_READ_COUNT: usize = (isize::MAX) as usize;
@@ -157,7 +158,8 @@ impl<T: Send + Sync> GracefulPhasedCellAsync<T> {
     /// # Errors
     ///
     /// Returns an error if the wait times out, the phase transition fails, or the closure returns
-    /// an error.
+    /// an error. If the provided async closure panics, the cell's phase will be transitioned
+    /// to `Cleanup`, and the panic will be resumed.
     pub async fn transition_to_cleanup_async<F, E>(
         &self,
         timeout: time::Duration,
@@ -178,53 +180,71 @@ impl<T: Send + Sync> GracefulPhasedCellAsync<T> {
         ) {
             Ok(PHASE_READ) => {
                 let result_w = self.wait_for_cleanup_phase_async(timeout).await;
+
                 let mut guard = self.data_mutex.lock().await;
+
                 let data_opt = unsafe { &mut *self.data_cell.get() };
-                if data_opt.is_some() {
-                    let result_f = f(data_opt.as_mut().unwrap()).await;
-                    unsafe {
-                        core::ptr::swap(data_opt, &mut *guard);
-                    }
+                if data_opt.is_none() {
+                    // impossible case
                     self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
-                    if let Err(e) = result_f {
-                        Err(PhasedError::with_source(
-                            u8_to_phase(PHASE_READ_TO_CLEANUP),
-                            PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
-                            e,
-                        ))
-                    } else if let Err(e) = result_w {
-                        Err(e)
-                    } else {
-                        Ok(())
-                    }
-                } else {
-                    self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
-                    Err(PhasedError::new(
-                        u8_to_phase(PHASE_READ),
+                    return Err(PhasedError::new(
+                        u8_to_phase(PHASE_CLEANUP),
                         PhasedErrorKind::InternalDataUnavailable,
-                    ))
+                    ));
+                }
+                let data = data_opt.as_mut().unwrap();
+
+                let future = f(data);
+                let result_f = panic::AssertUnwindSafe(future).catch_unwind().await;
+                unsafe {
+                    core::ptr::swap(data_opt, &mut *guard);
+                }
+                self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
+
+                result_w?;
+
+                match result_f {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(e)) => Err(PhasedError::with_source(
+                        u8_to_phase(PHASE_CLEANUP),
+                        PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
+                        e,
+                    )),
+                    Err(cause) => {
+                        drop(guard);
+                        std::panic::resume_unwind(cause);
+                    }
                 }
             }
-            Ok(_ /* PHASE_SETUP */) => {
-                let mut data_opt = self.data_mutex.lock().await;
-                if data_opt.is_some() {
-                    let result_f = f(data_opt.as_mut().unwrap()).await;
+            Ok(_ /*PHASE_SETUP*/) => {
+                let mut guard = self.data_mutex.lock().await;
+
+                let data_opt = &mut *guard;
+                if data_opt.is_none() {
+                    // impossible case
                     self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
-                    if let Err(e) = result_f {
-                        Err(PhasedError::with_source(
-                            u8_to_phase(PHASE_SETUP_TO_CLEANUP),
-                            PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
-                            e,
-                        ))
-                    } else {
-                        Ok(())
-                    }
-                } else {
-                    self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
-                    Err(PhasedError::new(
-                        u8_to_phase(PHASE_SETUP_TO_CLEANUP),
+                    return Err(PhasedError::new(
+                        u8_to_phase(PHASE_CLEANUP),
                         PhasedErrorKind::InternalDataUnavailable,
-                    ))
+                    ));
+                }
+                let data = data_opt.as_mut().unwrap();
+                let future = f(data);
+                let result_f = panic::AssertUnwindSafe(future).catch_unwind().await;
+
+                self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
+
+                match result_f {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(e)) => Err(PhasedError::with_source(
+                        u8_to_phase(PHASE_CLEANUP),
+                        PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
+                        e,
+                    )),
+                    Err(cause) => {
+                        drop(guard);
+                        std::panic::resume_unwind(cause);
+                    }
                 }
             }
             Err(PHASE_CLEANUP) => Err(PhasedError::new(
@@ -250,7 +270,8 @@ impl<T: Send + Sync> GracefulPhasedCellAsync<T> {
     /// # Errors
     ///
     /// Returns an error if the cell is not in the `Setup` phase or if the closure
-    /// returns an error.
+    /// returns an error. If the provided async closure panics, the cell's phase
+    /// will be reverted to `Setup`, and the panic will be resumed.
     pub async fn transition_to_read_async<F, E>(&self, mut f: F) -> Result<(), PhasedError>
     where
         F: FnMut(&mut T) -> Pin<Box<dyn Future<Output = Result<(), E>> + Send>>,
@@ -264,30 +285,46 @@ impl<T: Send + Sync> GracefulPhasedCellAsync<T> {
         ) {
             Ok(old_phase) => {
                 let mut data_opt = self.data_mutex.lock().await;
-                if data_opt.is_some() {
-                    if let Err(e) = f(data_opt.as_mut().unwrap()).await {
-                        self.change_phase(PHASE_SETUP_TO_READ, old_phase);
-                        self.notify_read_phase();
-                        Err(PhasedError::with_source(
-                            u8_to_phase(PHASE_SETUP_TO_READ),
-                            PhasedErrorKind::FailToRunClosureDuringTransitionToRead,
-                            e,
-                        ))
-                    } else {
+
+                if data_opt.is_none() {
+                    // impossible case
+                    self.change_phase(PHASE_SETUP_TO_READ, old_phase);
+                    self.notify_read_phase();
+                    return Err(PhasedError::new(
+                        u8_to_phase(PHASE_SETUP_TO_READ),
+                        PhasedErrorKind::InternalDataUnavailable,
+                    ));
+                }
+                let data = data_opt.as_mut().unwrap();
+                let future = f(data);
+                let result_f = panic::AssertUnwindSafe(future).catch_unwind().await;
+
+                match result_f {
+                    Ok(Ok(())) => {
                         unsafe {
                             core::ptr::swap(self.data_cell.get(), &mut *data_opt);
                         }
                         self.change_phase(PHASE_SETUP_TO_READ, PHASE_READ);
+                        drop(data_opt);
                         self.notify_read_phase();
                         Ok(())
                     }
-                } else {
-                    self.change_phase(PHASE_SETUP_TO_READ, old_phase);
-                    self.notify_read_phase();
-                    Err(PhasedError::new(
-                        u8_to_phase(PHASE_SETUP_TO_READ),
-                        PhasedErrorKind::InternalDataUnavailable,
-                    ))
+                    Ok(Err(e)) => {
+                        self.change_phase(PHASE_SETUP_TO_READ, old_phase);
+                        drop(data_opt);
+                        self.notify_read_phase();
+                        Err(PhasedError::with_source(
+                            u8_to_phase(PHASE_SETUP),
+                            PhasedErrorKind::FailToRunClosureDuringTransitionToRead,
+                            e,
+                        ))
+                    }
+                    Err(cause) => {
+                        self.change_phase(PHASE_SETUP_TO_READ, old_phase);
+                        drop(data_opt);
+                        self.notify_read_phase();
+                        std::panic::resume_unwind(cause);
+                    }
                 }
             }
             Err(PHASE_READ) => Err(PhasedError::new(
@@ -1617,5 +1654,79 @@ mod tests_of_phased_cell_async {
 
         handler.await.unwrap();
         assert_eq!(cell.phase(), Phase::Setup);
+    }
+
+    #[tokio::test]
+    async fn panic_during_transition_to_read() {
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        let future = cell.transition_to_read_async(|_data| {
+            Box::pin(async {
+                panic!("Panic during transition to read");
+                #[allow(unused)]
+                Ok::<(), MyError>(())
+            })
+        });
+        let result = panic::AssertUnwindSafe(future).catch_unwind().await;
+
+        assert!(result.is_err());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        // Ensure the data is still available and mutable after the panic
+        let mut data = cell.lock_async().await.unwrap();
+        data.add("still works".to_string());
+        assert_eq!(data.vec, &["still works".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn panic_during_transition_to_cleanup_from_setup() {
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        let future = cell.transition_to_cleanup_async(time::Duration::ZERO, |_data| {
+            Box::pin(async {
+                panic!("Panic during transition to cleanup");
+                #[allow(unused)]
+                Ok::<(), MyError>(())
+            })
+        });
+        let result = panic::AssertUnwindSafe(future).catch_unwind().await;
+
+        assert!(result.is_err());
+        assert_eq!(cell.phase(), Phase::Cleanup);
+
+        // Ensure the data is still available and mutable after the panic
+        let mut data = cell.lock_async().await.unwrap();
+        data.add("still works".to_string());
+        assert_eq!(data.vec, &["still works".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn panic_during_transition_to_cleanup_from_read() {
+        let cell = GracefulPhasedCellAsync::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        cell.transition_to_read_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
+            .await
+            .unwrap();
+        assert_eq!(cell.phase(), Phase::Read);
+
+        let future = cell.transition_to_cleanup_async(time::Duration::ZERO, |_data| {
+            Box::pin(async {
+                panic!("Panic during transition to cleanup");
+                #[allow(unused)]
+                Ok::<(), MyError>(())
+            })
+        });
+        let result = panic::AssertUnwindSafe(future).catch_unwind().await;
+
+        assert!(result.is_err());
+        assert_eq!(cell.phase(), Phase::Cleanup);
+
+        // Ensure the data is still available and mutable after the panic
+        let mut data = cell.lock_async().await.unwrap();
+        data.add("still works".to_string());
+        assert_eq!(data.vec, &["still works".to_string()]);
     }
 }

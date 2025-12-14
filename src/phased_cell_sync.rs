@@ -161,7 +161,8 @@ impl<T: Send + Sync> PhasedCellSync<T> {
     /// # Errors
     ///
     /// Returns an error if the phase transition fails, the mutex is poisoned, or the closure
-    /// returns an error.
+    /// returns an error. If the provided closure panics, the cell's phase will be transitioned
+    /// to `Cleanup`, and the panic will be resumed.
     pub fn transition_to_cleanup<F, E>(&self, mut f: F) -> Result<(), PhasedError>
     where
         F: FnMut(&mut T) -> Result<(), E>,
@@ -176,72 +177,85 @@ impl<T: Send + Sync> PhasedCellSync<T> {
                 _ => None,
             },
         ) {
-            Ok(PHASE_READ) => match self.data_mutex.lock() {
-                Ok(mut guard) => {
-                    let data_opt = unsafe { &mut *self.data_cell.get() };
-                    if data_opt.is_some() {
-                        let result = f(data_opt.as_mut().unwrap());
-                        unsafe {
-                            core::ptr::swap(data_opt, &mut *guard);
-                        }
+            Ok(PHASE_READ) => {
+                let mut guard = match self.data_mutex.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => {
                         self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
-                        if let Err(e) = result {
-                            Err(PhasedError::with_source(
-                                u8_to_phase(PHASE_READ_TO_CLEANUP),
-                                PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
-                                e,
-                            ))
-                        } else {
-                            Ok(())
-                        }
-                    } else {
-                        // impossible case
-                        self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
-                        Err(PhasedError::new(
-                            u8_to_phase(PHASE_SETUP_TO_READ),
-                            PhasedErrorKind::InternalDataUnavailable,
-                        ))
+                        return Err(PhasedError::new(
+                            u8_to_phase(PHASE_CLEANUP),
+                            PhasedErrorKind::InternalDataMutexIsPoisoned,
+                        ));
                     }
-                }
-                Err(_) => {
+                };
+
+                let data_opt = unsafe { &mut *self.data_cell.get() };
+                if data_opt.is_none() {
+                    // impossible case
                     self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
-                    Err(PhasedError::new(
-                        u8_to_phase(PHASE_READ_TO_CLEANUP),
-                        PhasedErrorKind::InternalDataMutexIsPoisoned,
-                    ))
+                    return Err(PhasedError::new(
+                        u8_to_phase(PHASE_CLEANUP),
+                        PhasedErrorKind::InternalDataUnavailable,
+                    ));
                 }
-            },
-            Ok(PHASE_SETUP) => match self.data_mutex.lock() {
-                Ok(mut data_opt) => {
-                    if data_opt.is_some() {
-                        let result = f(data_opt.as_mut().unwrap());
-                        self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
-                        if let Err(e) = result {
-                            Err(PhasedError::with_source(
-                                u8_to_phase(PHASE_SETUP_TO_CLEANUP),
-                                PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
-                                e,
-                            ))
-                        } else {
-                            Ok(())
-                        }
-                    } else {
-                        // impossible case
-                        self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
-                        Err(PhasedError::new(
-                            u8_to_phase(PHASE_SETUP_TO_CLEANUP),
-                            PhasedErrorKind::InternalDataUnavailable,
-                        ))
+                let data = data_opt.as_mut().unwrap();
+                let result_f = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(data)));
+                unsafe {
+                    core::ptr::swap(data_opt, &mut *guard);
+                }
+                self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
+
+                match result_f {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(e)) => Err(PhasedError::with_source(
+                        u8_to_phase(PHASE_CLEANUP),
+                        PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
+                        e,
+                    )),
+                    Err(panic_cause) => {
+                        drop(guard);
+                        std::panic::resume_unwind(panic_cause);
                     }
                 }
-                Err(_) => {
+            }
+            Ok(_ /*PHASE_SETUP*/) => {
+                let mut guard = match self.data_mutex.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
+                        return Err(PhasedError::new(
+                            u8_to_phase(PHASE_CLEANUP),
+                            PhasedErrorKind::InternalDataMutexIsPoisoned,
+                        ));
+                    }
+                };
+
+                let data_opt = &mut *guard;
+                if data_opt.is_none() {
+                    // impossible case
                     self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
-                    Err(PhasedError::new(
-                        u8_to_phase(PHASE_SETUP_TO_CLEANUP),
-                        PhasedErrorKind::InternalDataMutexIsPoisoned,
-                    ))
+                    return Err(PhasedError::new(
+                        u8_to_phase(PHASE_CLEANUP),
+                        PhasedErrorKind::InternalDataUnavailable,
+                    ));
                 }
-            },
+                let data = data_opt.as_mut().unwrap();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(data)));
+                self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
+
+                match result {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(e)) => Err(PhasedError::with_source(
+                        u8_to_phase(PHASE_CLEANUP),
+                        PhasedErrorKind::FailToRunClosureDuringTransitionToCleanup,
+                        e,
+                    )),
+                    Err(panic_cause) => {
+                        drop(guard);
+                        std::panic::resume_unwind(panic_cause);
+                    }
+                }
+            }
             Err(PHASE_CLEANUP) => Err(PhasedError::new(
                 u8_to_phase(PHASE_CLEANUP),
                 PhasedErrorKind::PhaseIsAlreadyCleanup,
@@ -254,7 +268,6 @@ impl<T: Send + Sync> PhasedCellSync<T> {
                 u8_to_phase(old_phase),
                 PhasedErrorKind::DuringTransitionToCleanup,
             )),
-            Ok(_) => Ok(()), // impossible case
         }
     }
 
@@ -266,7 +279,8 @@ impl<T: Send + Sync> PhasedCellSync<T> {
     /// # Errors
     ///
     /// Returns an error if the cell is not in the `Setup` phase, the mutex is
-    /// poisoned, or if the closure returns an error.
+    /// poisoned, or if the closure returns an error. If the provided closure panics, the cell's
+    /// phase will be reverted to `Setup`, and the panic will be resumed.
     pub fn transition_to_read<F, E>(&self, mut f: F) -> Result<(), PhasedError>
     where
         F: FnMut(&mut T) -> Result<(), E>,
@@ -278,40 +292,52 @@ impl<T: Send + Sync> PhasedCellSync<T> {
             atomic::Ordering::AcqRel,
             atomic::Ordering::Acquire,
         ) {
-            Ok(old_phase) => match self.data_mutex.lock() {
-                Ok(mut data_opt) => {
-                    if data_opt.is_some() {
-                        if let Err(e) = f(data_opt.as_mut().unwrap()) {
-                            self.change_phase(PHASE_SETUP_TO_READ, old_phase);
-                            Err(PhasedError::with_source(
-                                u8_to_phase(PHASE_SETUP_TO_READ),
-                                PhasedErrorKind::FailToRunClosureDuringTransitionToRead,
-                                e,
-                            ))
-                        } else {
-                            unsafe {
-                                core::ptr::swap(self.data_cell.get(), &mut *data_opt);
-                            }
-                            self.change_phase(PHASE_SETUP_TO_READ, PHASE_READ);
-                            Ok(())
-                        }
-                    } else {
-                        // impossible case
+            Ok(old_phase) => {
+                let mut data_opt = match self.data_mutex.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => {
                         self.change_phase(PHASE_SETUP_TO_READ, old_phase);
-                        Err(PhasedError::new(
-                            u8_to_phase(PHASE_SETUP_TO_READ),
-                            PhasedErrorKind::InternalDataUnavailable,
+                        return Err(PhasedError::new(
+                            u8_to_phase(old_phase),
+                            PhasedErrorKind::InternalDataMutexIsPoisoned,
+                        ));
+                    }
+                };
+
+                if data_opt.is_none() {
+                    // impossible case
+                    self.change_phase(PHASE_SETUP_TO_READ, old_phase);
+                    return Err(PhasedError::new(
+                        u8_to_phase(PHASE_SETUP_TO_READ),
+                        PhasedErrorKind::InternalDataUnavailable,
+                    ));
+                }
+                let data = data_opt.as_mut().unwrap();
+                let result_f = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(data)));
+
+                match result_f {
+                    Ok(Ok(())) => {
+                        unsafe {
+                            core::ptr::swap(self.data_cell.get(), &mut *data_opt);
+                        }
+                        self.change_phase(PHASE_SETUP_TO_READ, PHASE_READ);
+                        Ok(())
+                    }
+                    Ok(Err(e)) => {
+                        self.change_phase(PHASE_SETUP_TO_READ, old_phase);
+                        Err(PhasedError::with_source(
+                            u8_to_phase(PHASE_SETUP),
+                            PhasedErrorKind::FailToRunClosureDuringTransitionToRead,
+                            e,
                         ))
                     }
+                    Err(panic_cause) => {
+                        self.change_phase(PHASE_SETUP_TO_READ, old_phase);
+                        drop(data_opt);
+                        std::panic::resume_unwind(panic_cause);
+                    }
                 }
-                Err(_e) => {
-                    self.change_phase(PHASE_SETUP_TO_READ, old_phase);
-                    Err(PhasedError::new(
-                        u8_to_phase(old_phase),
-                        PhasedErrorKind::InternalDataMutexIsPoisoned,
-                    ))
-                }
-            },
+            }
             Err(PHASE_READ) => Err(PhasedError::new(
                 u8_to_phase(PHASE_READ),
                 PhasedErrorKind::PhaseIsAlreadyRead,
@@ -1194,5 +1220,67 @@ mod tests_of_phased_cell_sync {
             panic!();
         }
         assert_eq!(cell.phase(), Phase::Cleanup);
+    }
+
+    #[test]
+    fn panic_during_transition_to_read() {
+        let cell = PhasedCellSync::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = cell.transition_to_read(|_data| -> Result<(), MyError> {
+                panic!("Panic during transition to read");
+            });
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        // Ensure the data is still available and mutable after the panic
+        let mut data = cell.lock().unwrap();
+        data.add("still works".to_string());
+        assert_eq!(data.vec, &["still works".to_string()]);
+    }
+
+    #[test]
+    fn panic_during_transition_to_cleanup_from_setup() {
+        let cell = PhasedCellSync::new(MyStruct::new());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = cell.transition_to_cleanup(|_data| -> Result<(), MyError> {
+                panic!("Panic during transition to cleanup");
+            });
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(cell.phase(), Phase::Cleanup);
+
+        // Ensure the data is still available and mutable after the panic
+        let mut data = cell.lock().unwrap();
+        data.add("still works".to_string());
+        assert_eq!(data.vec, &["still works".to_string()]);
+    }
+
+    #[test]
+    fn panic_during_transition_to_cleanup_from_read() {
+        let cell = PhasedCellSync::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        cell.transition_to_read(|_data| Ok::<(), MyError>(()))
+            .unwrap();
+        assert_eq!(cell.phase(), Phase::Read);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = cell.transition_to_cleanup(|_data| -> Result<(), MyError> {
+                panic!("Panic during transition to cleanup");
+            });
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(cell.phase(), Phase::Cleanup);
+
+        // Ensure the data is still available and mutable after the panic
+        let mut data = cell.lock().unwrap();
+        data.add("still works".to_string());
+        assert_eq!(data.vec, &["still works".to_string()]);
     }
 }
