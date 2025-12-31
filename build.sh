@@ -28,6 +28,16 @@ compile() {
 }
 
 test() {
+  echo "#### feature = default"
+  cargo test -- --show-output
+  errcheck $?
+  echo "#### feature = setup_read_cleanup-graceful"
+  cargo test --features setup_read_cleanup-graceful -- --show-output
+  errcheck $?
+  echo "#### feature = setup_read_cleanup-on-tokio"
+  cargo test --features setup_read_cleanup-on-tokio -- --show-output
+  errcheck $?
+  echo "#### feature = full"
   cargo test --all-features -- --show-output
   errcheck $?
 }
