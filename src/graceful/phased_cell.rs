@@ -10,10 +10,16 @@ const MAX_READ_COUNT: usize = (isize::MAX) as usize;
 
 use std::{any, cell, error, marker, sync, sync::atomic, time};
 
+// conditional implementation:
+// `GracefulPhasedCell<T>` can be created with any `T`.
+// These `impl`s ensure that `GracefulPhasedCell<T>` is only `Send` or `Sync` if `T` is.
+// Attempting to use a `GracefulPhasedCell<T>` across threads (e.g. in an `Arc`) where
+// `T` is not `Send + Sync` will result in a compile-time error, thus preserving
+// thread safety without restricting single-threaded usage.
+unsafe impl<T: Send> Send for GracefulPhasedCell<T> {}
 unsafe impl<T: Send + Sync> Sync for GracefulPhasedCell<T> {}
-unsafe impl<T: Send + Sync> Send for GracefulPhasedCell<T> {}
 
-impl<T: Send + Sync> GracefulPhasedCell<T> {
+impl<T> GracefulPhasedCell<T> {
     /// Creates a new `GracefulPhasedCell` in the `Setup` phase, containing the provided data.
     ///
     /// # Examples

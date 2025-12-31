@@ -22,9 +22,10 @@
 //!
 //! This crate offers several cell variants to suit different concurrency needs:
 //!
-//! - [`PhasedCell`]: The basic cell. It is `Sync`, allowing it to be shared across
-//!   threads for reading. However, mutable access via [`get_mut_unlocked`](PhasedCell::get_mut_unlocked)
-//!   is not thread-safe and requires the caller to ensure exclusive access.
+//! - [`PhasedCell`]: The basic cell. It is `Sync` if the contained data `T` is `Send + Sync`,
+//!   allowing it to be shared across threads for reading. However, mutable access via
+//!   [`get_mut_unlocked`](PhasedCell::get_mut_unlocked) is not thread-safe and requires the
+//!   caller to ensure exclusive access.
 //!
 //! - [`PhasedCellSync`]: A thread-safe version that uses a `std::sync::Mutex` to allow for
 //!   safe concurrent mutable access during the `Setup` and `Cleanup` phases.
@@ -201,11 +202,12 @@ pub struct PhasedError {
 /// phase, a read-only operational period in the `Read` phase, and deconstruction
 /// in the `Cleanup` phase.
 ///
-/// This cell is `Sync`, allowing it to be shared across threads. During the `Read`
-/// phase, the `read` and `read_relaxed` methods can be safely called from multiple
-/// threads simultaneously. Access during phase transitions and mutable access in
+/// This cell is `Sync` if the contained data `T` is `Send + Sync`, which allows
+/// the cell to be shared across threads. During the `Read` phase, the `read` and
+/// `read_relaxed` methods can be safely called from multiple threads simultaneously
+/// if the cell is `Sync`. Access during phase transitions and mutable access in
 /// other phases are not thread-safe.
-pub struct PhasedCell<T: Send + Sync> {
+pub struct PhasedCell<T> {
     phase: atomic::AtomicU8,
     data_cell: cell::UnsafeCell<T>,
     _marker: marker::PhantomData<T>,
