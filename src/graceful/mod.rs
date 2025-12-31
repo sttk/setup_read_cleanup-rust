@@ -19,7 +19,9 @@ use std::{cell, marker, sync::atomic};
 /// 2. **Graceful Read**: If a read operation is attempted while the cell is in the
 ///    `Setup` phase and transitioning to `Read`, the read operation
 ///    will wait for the transition to complete and for the cell to enter the `Read` phase.
-pub struct GracefulPhasedCell<T: Send + Sync> {
+///
+/// Like `PhasedCell`, this cell is `Sync` if the contained data `T` is `Send + Sync`.
+pub struct GracefulPhasedCell<T> {
     phase: atomic::AtomicU8,
     graceful_counter: atomic::AtomicUsize,
     graceful_condvar: std::sync::Condvar,

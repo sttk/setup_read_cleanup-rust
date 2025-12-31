@@ -7,10 +7,16 @@ use crate::{Phase, PhasedCell, PhasedError, PhasedErrorKind};
 
 use std::{cell, error, marker, sync::atomic};
 
+// conditional implementation:
+// `PhasedCell<T>` can be created with any `T`.
+// These `impl`s ensure that `PhasedCell<T>` is only `Send` or `Sync` if `T` is.
+// Attempting to use a `PhasedCell<T>` across threads (e.g. in an `Arc`) where
+// `T` is not `Send + Sync` will result in a compile-time error, thus preserving
+// thread safety without restricting single-threaded usage.
+unsafe impl<T: Send> Send for PhasedCell<T> {}
 unsafe impl<T: Send + Sync> Sync for PhasedCell<T> {}
-unsafe impl<T: Send + Sync> Send for PhasedCell<T> {}
 
-impl<T: Send + Sync> PhasedCell<T> {
+impl<T> PhasedCell<T> {
     /// Creates a new `PhasedCell` in the `Setup` phase, containing the provided data.
     ///
     /// # Examples
