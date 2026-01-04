@@ -30,12 +30,12 @@
 //! - [`PhasedCellSync`]: A thread-safe version that uses a `std::sync::Mutex` to allow for
 //!   safe concurrent mutable access during the `Setup` and `Cleanup` phases.
 //!
-//! - [`PhasedCellAsync`]: (Requires the `setup_read_cleanup-on-tokio` feature) An `async` version
+//! - [`PhasedCellAsync`]: (Requires the `tokio` feature) An `async` version
 //!   of `PhasedCellSync` that uses a `tokio::sync::Mutex`.
 //!
 //! ## Graceful Cleanup
 //!
-//! (Requires the `setup_read_cleanup-graceful` feature)
+//! (Requires the `graceful` feature)
 //!
 //! The `graceful` module provides wrappers that add graceful cleanup capabilities. When
 //! transitioning to the `Cleanup` phase, these cells will wait for a specified duration
@@ -103,9 +103,9 @@
 //!
 //! # Features
 //!
-//! - `setup_read_cleanup-on-tokio`: Enables the `async` cell variants (`PhasedCellAsync`, `GracefulPhasedCellAsync`)
+//! - `tokio`: Enables the `async` cell variants (`PhasedCellAsync`, `GracefulPhasedCellAsync`)
 //!   which use `tokio::sync`.
-//! - `setup_read_cleanup-graceful`: Enables the `graceful` module, which provides cells with
+//! - `graceful`: Enables the `graceful` module, which provides cells with
 //!   graceful cleanup capabilities.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -115,8 +115,8 @@ mod phase;
 mod phased_cell;
 mod phased_cell_sync;
 
-#[cfg(feature = "setup_read_cleanup-on-tokio")]
-#[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
+#[cfg(feature = "tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 mod phased_cell_async;
 
 /// A module for graceful cleanup of phased cells.
@@ -124,8 +124,8 @@ mod phased_cell_async;
 /// This module provides extensions and wrappers for `PhasedCell` and its variants
 /// to support graceful cleanup, allowing ongoing operations to complete before
 /// transitioning to the `Cleanup` phase.
-#[cfg(feature = "setup_read_cleanup-graceful")]
-#[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-graceful")))]
+#[cfg(feature = "graceful")]
+#[cfg_attr(docsrs, doc(cfg(feature = "graceful")))]
 pub mod graceful;
 
 use std::{cell, error, marker, sync::atomic};
@@ -176,13 +176,13 @@ pub enum PhasedErrorKind {
     InternalDataMutexIsPoisoned,
 
     /// An error indicating a timeout occurred while waiting for a graceful cleanup.
-    #[cfg(feature = "setup_read_cleanup-graceful")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-graceful")))]
+    #[cfg(feature = "graceful")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "graceful")))]
     GracefulWaitTimeout(std::time::Duration),
 
     /// An error indicating that a `std::sync::Mutex` for graceful-wait is poisoned.
-    #[cfg(feature = "setup_read_cleanup-graceful")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-graceful")))]
+    #[cfg(feature = "graceful")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "graceful")))]
     GracefulWaitMutexIsPoisoned,
 }
 
@@ -239,8 +239,8 @@ pub struct StdMutexGuard<'mutex, T> {
 /// `PhasedCellAsync` is similar to `PhasedCellSync` but is designed for asynchronous
 /// contexts using `tokio`. It leverages a `tokio::sync::Mutex` to provide asynchronous,
 /// non-blocking locking, making it suitable for use in async applications.
-#[cfg(feature = "setup_read_cleanup-on-tokio")]
-#[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
+#[cfg(feature = "tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub struct PhasedCellAsync<T: Send + Sync> {
     phase: atomic::AtomicU8,
     data_mutex: tokio::sync::Mutex<Option<T>>,
@@ -251,8 +251,8 @@ pub struct PhasedCellAsync<T: Send + Sync> {
 /// A RAII implementation of a scoped lock for a `PhasedCellAsync`.
 ///
 /// When this structure is dropped (falls out of scope), the lock will be released.
-#[cfg(feature = "setup_read_cleanup-on-tokio")]
-#[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
+#[cfg(feature = "tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub struct TokioMutexGuard<'mutex, T> {
     inner: tokio::sync::MutexGuard<'mutex, Option<T>>,
 }

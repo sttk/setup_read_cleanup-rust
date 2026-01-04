@@ -1,4 +1,4 @@
-#[cfg(all(test, feature = "setup_read_cleanup-graceful"))]
+#[cfg(all(test, feature = "graceful"))]
 mod integration_tests_of_phased_cell {
     use setup_read_cleanup::graceful::GracefulPhasedCell;
     use std::{error, fmt, thread, time};

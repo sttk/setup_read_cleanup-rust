@@ -31,11 +31,11 @@ test() {
   echo "#### feature = default"
   cargo test -- --show-output
   errcheck $?
-  echo "#### feature = setup_read_cleanup-graceful"
-  cargo test --features setup_read_cleanup-graceful -- --show-output
+  echo "#### feature = graceful"
+  cargo test --features graceful -- --show-output
   errcheck $?
-  echo "#### feature = setup_read_cleanup-on-tokio"
-  cargo test --features setup_read_cleanup-on-tokio -- --show-output
+  echo "#### feature = tokio"
+  cargo test --features tokio -- --show-output
   errcheck $?
   echo "#### feature = full"
   cargo test --all-features -- --show-output
