@@ -5,8 +5,8 @@
 mod phased_cell;
 mod phased_cell_sync;
 
-#[cfg(feature = "setup_read_cleanup-on-tokio")]
-#[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
+#[cfg(feature = "tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 mod phased_cell_async;
 
 use std::{cell, marker, sync::atomic};
@@ -59,8 +59,8 @@ pub struct GracefulPhasedCellSync<T: Send + Sync> {
 /// 2. **Graceful Read**: If a read operation is attempted while the cell is in the
 ///    `Setup` phase and transitioning to `Read`, the read operation
 ///    will wait for the transition to complete and for the cell to enter the `Read` phase.
-#[cfg(feature = "setup_read_cleanup-on-tokio")]
-#[cfg_attr(docsrs, doc(cfg(feature = "setup_read_cleanup-on-tokio")))]
+#[cfg(feature = "tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 pub struct GracefulPhasedCellAsync<T: Send + Sync> {
     phase: atomic::AtomicU8,
     graceful_counter: atomic::AtomicUsize,

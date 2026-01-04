@@ -1,8 +1,4 @@
-#[cfg(all(
-    test,
-    feature = "setup_read_cleanup-graceful",
-    feature = "setup_read_cleanup-on-tokio"
-))]
+#[cfg(all(test, feature = "graceful", feature = "tokio"))]
 mod integration_tests_of_graceful_phased_cell_async {
     use setup_read_cleanup::{graceful::GracefulPhasedCellAsync, PhasedErrorKind};
     use std::{error, fmt};

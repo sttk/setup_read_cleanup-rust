@@ -9,14 +9,14 @@
 
 use setup_read_cleanup::{Phase, PhasedCell};
 
-#[cfg(feature = "setup_read_cleanup-graceful")]
+#[cfg(feature = "graceful")]
 use setup_read_cleanup::graceful::GracefulPhasedCell;
 
 use std::rc::Rc;
 use std::sync::Arc;
 use std::thread;
 
-#[cfg(feature = "setup_read_cleanup-graceful")]
+#[cfg(feature = "graceful")]
 use std::time::Duration;
 
 #[cfg(test)]
@@ -103,7 +103,7 @@ mod tests_of_phased_cell {
     }
 }
 
-#[cfg(feature = "setup_read_cleanup-graceful")]
+#[cfg(feature = "graceful")]
 #[cfg(test)]
 mod tests_of_graceful_phased_cell {
     use super::*;
@@ -140,7 +140,7 @@ mod tests_of_graceful_phased_cell {
         let _ = final_data;
     }
 
-    #[cfg(feature = "setup_read_cleanup-graceful")]
+    #[cfg(feature = "graceful")]
     #[test]
     fn test_multi_threaded_with_sync_data() {
         let cell_instance = GracefulPhasedCell::new(String::from("initial graceful"));

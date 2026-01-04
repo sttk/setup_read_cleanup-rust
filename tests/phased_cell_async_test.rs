@@ -1,5 +1,5 @@
 #[cfg(test)]
-#[cfg(feature = "setup_read_cleanup-on-tokio")]
+#[cfg(feature = "tokio")]
 mod integration_tests_of_phased_cell_async {
     use setup_read_cleanup::{PhasedCellAsync, PhasedErrorKind};
     use std::{error, fmt};
