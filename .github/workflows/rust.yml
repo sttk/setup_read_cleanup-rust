@@ -20,6 +20,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ matrix.rustver }}
+      - run: cargo test -- --show-output
+      - run: cargo test --features graceful -- --show-output
+      - run: cargo test --features tokio -- --show-output
       - run: cargo test --all-features -- --show-output
 
   cover:
