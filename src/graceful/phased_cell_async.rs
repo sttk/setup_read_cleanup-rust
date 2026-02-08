@@ -1863,4 +1863,43 @@ mod tests_of_phased_cell_async {
             })
             .await;
     }
+
+    #[tokio::test]
+    async fn test_force_to_cleanup() {
+        let mut cell = GracefulPhasedCellAsync::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        {
+            let mut data = cell.lock_async().await.unwrap();
+            data.add("hello".to_string());
+        }
+
+        cleanup(&mut cell);
+    }
+
+    #[tokio::test]
+    async fn test_read_and_force_to_cleanup() {
+        let mut cell = GracefulPhasedCellAsync::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        {
+            let mut data = cell.lock_async().await.unwrap();
+            data.add("hello".to_string());
+        }
+
+        cell.transition_to_read_async(|_data| Box::pin(async { Ok::<(), MyError>(()) }))
+            .await
+            .unwrap();
+        assert_eq!(cell.phase(), Phase::Read);
+
+        cleanup(&mut cell);
+    }
+
+    fn cleanup(cell: &mut GracefulPhasedCellAsync<MyStruct>) {
+        let _ = cell.force_to_cleanup(|data| {
+            data.clear();
+            Ok::<(), MyError>(())
+        });
+        assert_eq!(cell.phase(), Phase::Cleanup);
+    }
 }
