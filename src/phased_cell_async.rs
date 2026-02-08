@@ -169,7 +169,7 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
     /// to `Cleanup`, and the panic will be resumed.
     pub async fn transition_to_cleanup_async<F, E>(&self, mut f: F) -> Result<(), PhasedError>
     where
-        F: FnMut(&mut T) -> Pin<Box<dyn Future<Output = Result<(), E>> + Send>>,
+        for<'a> F: FnMut(&'a mut T) -> Pin<Box<dyn Future<Output = Result<(), E>> + Send + 'a>>,
         E: error::Error + Send + Sync + 'static,
     {
         match self.phase.fetch_update(
@@ -273,7 +273,7 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
     /// will be reverted to `Setup`, and the panic will be resumed.
     pub async fn transition_to_read_async<F, E>(&self, mut f: F) -> Result<(), PhasedError>
     where
-        F: FnMut(&mut T) -> Pin<Box<dyn Future<Output = Result<(), E>> + Send>>,
+        for<'a> F: FnMut(&'a mut T) -> Pin<Box<dyn Future<Output = Result<(), E>> + Send + 'a>>,
         E: error::Error + Send + Sync + 'static,
     {
         match self.phase.compare_exchange(
@@ -1348,5 +1348,35 @@ mod tests_of_phased_cell_async {
         let mut data = cell.lock_async().await.unwrap();
         data.add("still works".to_string());
         assert_eq!(data.vec, &["still works".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn try_hrtb_effect_of_transition_to_cleanup_async() {
+        let cell = PhasedCellAsync::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        let _ = cell
+            .transition_to_read_async(|data| {
+                Box::pin(async {
+                    data.add("hello".to_string());
+                    Ok::<(), MyError>(())
+                })
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn try_hrtb_effect_of_transition_to_read_async() {
+        let cell = PhasedCellAsync::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        let _ = cell
+            .transition_to_read_async(|data| {
+                Box::pin(async {
+                    data.add("hello".to_string());
+                    Ok::<(), MyError>(())
+                })
+            })
+            .await;
     }
 }
