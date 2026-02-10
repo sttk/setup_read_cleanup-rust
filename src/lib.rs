@@ -175,6 +175,11 @@ pub enum PhasedErrorKind {
     /// An error indicating that a `std::sync::Mutex` for internal data is poisoned.
     InternalDataMutexIsPoisoned,
 
+    /// An error indicating that the internal data mutex could not be locked non-blockingly.
+    #[cfg(feature = "tokio")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
+    MutexTryLockFailed,
+
     /// An error indicating a timeout occurred while waiting for a graceful cleanup.
     #[cfg(feature = "graceful")]
     #[cfg_attr(docsrs, doc(cfg(feature = "graceful")))]
