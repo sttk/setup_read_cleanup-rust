@@ -277,7 +277,7 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
     /// Returns an error if the phase transition fails or the closure returns an error.
     /// If the provided synchronous closure panics, the cell's phase will be transitioned
     /// to `Cleanup`, and the panic will be resumed.
-    pub fn force_to_cleanup<F, E>(&mut self, mut f: F) -> Result<(), PhasedError>
+    pub fn force_to_cleanup<F, E>(&self, mut f: F) -> Result<(), PhasedError>
     where
         F: FnMut(&mut T) -> Result<(), E>,
         E: error::Error + Send + Sync + 'static,
@@ -292,7 +292,15 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
             },
         ) {
             Ok(PHASE_READ) => {
-                let data_in_mutex = self.data_mutex.get_mut();
+                let mut guard = self.data_mutex.try_lock().map_err(|_| {
+                    // impossible case
+                    self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
+                    PhasedError::new(
+                        u8_to_phase(PHASE_CLEANUP),
+                        PhasedErrorKind::MutexTryLockFailed,
+                    )
+                })?;
+                let data_in_mutex = &mut *guard;
 
                 let data_opt = unsafe { &mut *self.data_cell.get() };
                 if data_opt.is_none() {
@@ -324,7 +332,16 @@ impl<T: Send + Sync> PhasedCellAsync<T> {
                 }
             }
             Ok(_ /*PHASE_SETUP*/) => {
-                let data_opt = self.data_mutex.get_mut();
+                let mut guard = self.data_mutex.try_lock().map_err(|_| {
+                    // impossible case
+                    self.change_phase(PHASE_READ_TO_CLEANUP, PHASE_CLEANUP);
+                    PhasedError::new(
+                        u8_to_phase(PHASE_CLEANUP),
+                        PhasedErrorKind::MutexTryLockFailed,
+                    )
+                })?;
+                let data_opt = &mut *guard;
+
                 if data_opt.is_none() {
                     // impossible case
                     self.change_phase(PHASE_SETUP_TO_CLEANUP, PHASE_CLEANUP);
