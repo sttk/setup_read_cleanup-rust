@@ -467,6 +467,100 @@ impl<T: Send + Sync> GracefulPhasedCellAsync<T> {
         }
     }
 
+    /// Forcibly transitions the cell to the `Read` phase.
+    ///
+    /// This method is a synchronous function that can be called from non-async contexts.
+    /// It takes a synchronous closure `f` which is executed on the contained data.
+    ///
+    /// Unlike `transition_to_read_async`, this method does not require `await`
+    /// and performs the transition synchronously. Crucially, it does not wait for
+    /// active `setup` operations to complete, making it a "force" transition.
+    ///
+    /// It can be called from the `Setup` phase.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the phase transition fails or the closure returns an error.
+    /// If the provided synchronous closure panics, the cell's phase will be transitioned
+    /// to `Setup`, and the panic will be resumed.
+    pub fn force_to_read<F, E>(&self, mut f: F) -> Result<(), PhasedError>
+    where
+        F: FnMut(&mut T) -> Result<(), E>,
+        E: error::Error + Send + Sync + 'static,
+    {
+        match self.phase.compare_exchange(
+            PHASE_SETUP,
+            PHASE_SETUP_TO_READ,
+            atomic::Ordering::AcqRel,
+            atomic::Ordering::Acquire,
+        ) {
+            Ok(old_phase) => {
+                let mut guard = self.data_mutex.try_lock().map_err(|_| {
+                    // impossible case
+                    self.change_phase(PHASE_SETUP_TO_READ, PHASE_SETUP);
+                    PhasedError::new(
+                        u8_to_phase(PHASE_SETUP),
+                        PhasedErrorKind::MutexTryLockFailed,
+                    )
+                })?;
+                let data_opt = &mut *guard;
+
+                if data_opt.is_none() {
+                    // impossible case
+                    self.change_phase(PHASE_SETUP_TO_READ, old_phase);
+                    self.notify_read_phase();
+                    return Err(PhasedError::new(
+                        u8_to_phase(PHASE_SETUP_TO_READ),
+                        PhasedErrorKind::InternalDataUnavailable,
+                    ));
+                }
+                let data = data_opt.as_mut().unwrap();
+                let result_f = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(data)));
+
+                match result_f {
+                    Ok(Ok(())) => {
+                        unsafe {
+                            core::ptr::swap(self.data_cell.get(), &mut *data_opt);
+                        }
+                        self.change_phase(PHASE_SETUP_TO_READ, PHASE_READ);
+                        self.notify_read_phase();
+                        Ok(())
+                    }
+                    Ok(Err(e)) => {
+                        self.change_phase(PHASE_SETUP_TO_READ, old_phase);
+                        self.notify_read_phase();
+                        Err(PhasedError::with_source(
+                            u8_to_phase(PHASE_SETUP),
+                            PhasedErrorKind::FailToRunClosureDuringTransitionToRead,
+                            e,
+                        ))
+                    }
+                    Err(cause) => {
+                        self.change_phase(PHASE_SETUP_TO_READ, old_phase);
+                        self.notify_read_phase();
+                        std::panic::resume_unwind(cause);
+                    }
+                }
+            }
+            Err(PHASE_READ) => Err(PhasedError::new(
+                u8_to_phase(PHASE_READ),
+                PhasedErrorKind::PhaseIsAlreadyRead,
+            )),
+            Err(PHASE_CLEANUP) => Err(PhasedError::new(
+                u8_to_phase(PHASE_CLEANUP),
+                PhasedErrorKind::PhaseIsAlreadyCleanup,
+            )),
+            Err(PHASE_SETUP_TO_READ) => Err(PhasedError::new(
+                u8_to_phase(PHASE_SETUP_TO_READ),
+                PhasedErrorKind::DuringTransitionToRead,
+            )),
+            Err(old_phase) => Err(PhasedError::new(
+                u8_to_phase(old_phase),
+                PhasedErrorKind::DuringTransitionToCleanup,
+            )),
+        }
+    }
+
     /// Asynchronously locks the cell and returns a guard that allows mutable access to the data.
     ///
     /// This method is only successful if the cell is in the `Setup` or `Cleanup` phase.
@@ -1918,5 +2012,26 @@ mod tests_of_phased_cell_async {
             Ok::<(), MyError>(())
         });
         assert_eq!(cell.phase(), Phase::Cleanup);
+    }
+
+    #[tokio::test]
+    async fn test_force_to_read() {
+        let mut cell = GracefulPhasedCellAsync::new(MyStruct::new());
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        {
+            let mut data = cell.lock_async().await.unwrap();
+            data.add("hello".to_string());
+        }
+
+        setup(&mut cell);
+    }
+
+    fn setup(cell: &mut GracefulPhasedCellAsync<MyStruct>) {
+        let _ = cell.force_to_read(|data| {
+            data.clear();
+            Ok::<(), MyError>(())
+        });
+        assert_eq!(cell.phase(), Phase::Read);
     }
 }
