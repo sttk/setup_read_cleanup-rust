@@ -2006,7 +2006,7 @@ mod tests_of_phased_cell_async {
         cleanup(&mut cell);
     }
 
-    fn cleanup(cell: &mut GracefulPhasedCellAsync<MyStruct>) {
+    fn cleanup(cell: &GracefulPhasedCellAsync<MyStruct>) {
         let _ = cell.force_to_cleanup(|data| {
             data.clear();
             Ok::<(), MyError>(())
@@ -2027,7 +2027,7 @@ mod tests_of_phased_cell_async {
         setup(&mut cell);
     }
 
-    fn setup(cell: &mut GracefulPhasedCellAsync<MyStruct>) {
+    fn setup(cell: &GracefulPhasedCellAsync<MyStruct>) {
         let _ = cell.force_to_read(|data| {
             data.clear();
             Ok::<(), MyError>(())
