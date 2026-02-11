@@ -473,8 +473,10 @@ impl<T: Send + Sync> GracefulPhasedCellAsync<T> {
     /// It takes a synchronous closure `f` which is executed on the contained data.
     ///
     /// Unlike `transition_to_read_async`, this method does not require `await`
-    /// and performs the transition synchronously. Crucially, it does not wait for
-    /// active `setup` operations to complete, making it a "force" transition.
+    /// and performs the transition synchronously. Crucially, it attempts the transition
+    /// immediately and synchronously without waiting for other concurrent operations
+    /// that might hold the data lock. If the lock cannot be acquired or another transition
+    /// is already in progress, it will return an error. This makes it a "force" transition.
     ///
     /// It can be called from the `Setup` phase.
     ///
