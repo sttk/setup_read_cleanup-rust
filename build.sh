@@ -67,7 +67,7 @@ doc() {
 }
 
 msrv() {
-  cargo msrv find --all-features --ignore-lockfile --no-check-feedback
+  cargo msrv find --min 1.70 --all-features --ignore-lockfile --no-check-feedback
   errcheck $?
 }
 

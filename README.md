@@ -128,26 +128,20 @@ This crate supports Rust 1.74.1 or later.
 % ./build.sh msrv
   [Meta]   cargo-msrv 0.18.4
 
-Compatibility Check #1: Rust 1.75.0
+Compatibility Check #1: Rust 1.82.0
   [OK]     Is compatible
 
-Compatibility Check #2: Rust 1.65.0
+Compatibility Check #2: Rust 1.76.0
+  [OK]     Is compatible
+
+Compatibility Check #3: Rust 1.73.0
   [FAIL]   Is incompatible
 
-Compatibility Check #3: Rust 1.70.0
-  [FAIL]   Is incompatible
-
-Compatibility Check #4: Rust 1.72.1
-  [FAIL]   Is incompatible
-
-Compatibility Check #5: Rust 1.73.0
-  [FAIL]   Is incompatible
-
-Compatibility Check #6: Rust 1.74.1
+Compatibility Check #4: Rust 1.74.1
   [OK]     Is compatible
 
 Result:
-   Considered (min … max):   Rust 1.56.1 … Rust 1.93.0
+   Considered (min … max):   Rust 1.70 … Rust 1.93.1
    Search method:            bisect
    MSRV:                     1.74.1
    Target:                   x86_64-apple-darwin
