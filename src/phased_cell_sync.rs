@@ -404,6 +404,62 @@ impl<T: Send + Sync> PhasedCellSync<T> {
         }
     }
 
+    /// Attempts to lock the cell and acquire a mutable guard without blocking.
+    ///
+    /// This method is non-blocking. If the lock cannot be acquired immediately,
+    /// it returns an error. It is only successful if the cell is in the `Setup`
+    /// or `Cleanup` phase.
+    ///
+    /// The returned guard releases the lock when it is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The cell is in the `Read` phase or transitioning between phases.
+    /// - The internal mutex is poisoned.
+    /// - The lock could not be acquired immediately because it was already held by another thread.
+    pub fn try_lock(&self) -> Result<StdMutexGuard<'_, T>, PhasedError> {
+        let phase = self.phase.load(atomic::Ordering::Acquire);
+        match phase {
+            PHASE_READ => Err(PhasedError::new(
+                u8_to_phase(PHASE_READ),
+                PhasedErrorKind::CannotCallOnPhaseRead("lock"),
+            )),
+            PHASE_SETUP_TO_READ => Err(PhasedError::new(
+                u8_to_phase(PHASE_SETUP_TO_READ),
+                PhasedErrorKind::DuringTransitionToRead,
+            )),
+            PHASE_SETUP_TO_CLEANUP => Err(PhasedError::new(
+                u8_to_phase(PHASE_SETUP_TO_CLEANUP),
+                PhasedErrorKind::DuringTransitionToCleanup,
+            )),
+            PHASE_READ_TO_CLEANUP => Err(PhasedError::new(
+                u8_to_phase(PHASE_READ_TO_CLEANUP),
+                PhasedErrorKind::DuringTransitionToCleanup,
+            )),
+            _ => match self.data_mutex.try_lock() {
+                Ok(guarded_opt) => {
+                    if let Some(new_guard) = StdMutexGuard::try_new(guarded_opt) {
+                        Ok(new_guard)
+                    } else {
+                        Err(PhasedError::new(
+                            u8_to_phase(phase),
+                            PhasedErrorKind::InternalDataUnavailable,
+                        ))
+                    }
+                }
+                Err(sync::TryLockError::Poisoned(_)) => Err(PhasedError::new(
+                    u8_to_phase(phase),
+                    PhasedErrorKind::InternalDataMutexIsPoisoned,
+                )),
+                Err(sync::TryLockError::WouldBlock) => Err(PhasedError::new(
+                    u8_to_phase(phase),
+                    PhasedErrorKind::MutexTryLockFailed,
+                )),
+            },
+        }
+    }
+
     #[inline]
     fn change_phase(&self, current_phase: u8, new_phase: u8) {
         let _result = self.phase.compare_exchange(
@@ -480,7 +536,7 @@ mod tests_of_phased_cell_sync {
     }
 
     #[test]
-    fn update_internal_data_in_setup_and_cleanup_phases() {
+    fn lock_and_update_internal_data_in_setup_and_cleanup_phases() {
         let cell = PhasedCellSync::new(MyStruct::new());
         assert_eq!(cell.phase_relaxed(), Phase::Setup);
         assert_eq!(cell.phase(), Phase::Setup);
@@ -615,6 +671,121 @@ mod tests_of_phased_cell_sync {
               "l".to_string(),
               "d".to_string(),
               // --
+              "W".to_string(),
+              "o".to_string(),
+              "r".to_string(),
+              "l".to_string(),
+              "d".to_string(),
+            ]);
+            data.clear();
+        } else {
+            panic!();
+        }
+
+        // Before the 2024 edition, adding a semicolon was required to prevent
+        // an E0597 error because the compiler's NLL couldn't correctly infer
+        // the lifetime of my_struct. In the 2024 edition, this semicolon is
+        // no longer needed due to improvements in the NLL logic.
+        ;
+    }
+
+    #[test]
+    fn try_lock_and_update_internal_data_in_setup_and_cleanup_phases() {
+        let cell = PhasedCellSync::new(MyStruct::new());
+        assert_eq!(cell.phase_relaxed(), Phase::Setup);
+        assert_eq!(cell.phase(), Phase::Setup);
+
+        let cell = Arc::new(cell);
+
+        let mut join_handlers = Vec::<std::thread::JoinHandle<_>>::new();
+        {
+            let cell_clone = Arc::clone(&cell);
+            let handler = std::thread::spawn(move || match cell_clone.try_lock() {
+                Ok(mut data) => {
+                    data.add("H".to_string());
+                    data.add("e".to_string());
+                    data.add("l".to_string());
+                    data.add("l".to_string());
+                    data.add("o".to_string());
+                }
+                Err(e) => panic!("{e:?}"),
+            });
+            join_handlers.push(handler);
+        }
+        while join_handlers.len() > 0 {
+            let _ = match join_handlers.remove(0).join() {
+                Ok(_) => Ok::<(), MyError>(()),
+                Err(e) => panic!("{e:?}"),
+            };
+        }
+
+        // Setup -> Read
+        if let Err(e) = cell.transition_to_read(|data| {
+            data.add(",".to_string());
+            Ok::<(), MyError>(())
+        }) {
+            panic!("{e:?}");
+        }
+        assert_eq!(cell.phase_relaxed(), Phase::Read);
+        assert_eq!(cell.phase(), Phase::Read);
+
+        if let Ok(data) = cell.read_relaxed() {
+            assert_eq!(
+                &data.vec,
+                &[
+                    "H".to_string(),
+                    "e".to_string(),
+                    "l".to_string(),
+                    "l".to_string(),
+                    "o".to_string(),
+                    ",".to_string(),
+                ]
+            );
+        } else {
+            panic!();
+        }
+
+        // Read -> Cleanup
+        if let Err(e) = cell.transition_to_cleanup(|data| {
+            data.add(" ** ".to_string());
+            Ok::<(), MyError>(())
+        }) {
+            panic!("{e:?}");
+        }
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
+
+        let mut join_handlers = Vec::<std::thread::JoinHandle<_>>::new();
+        {
+            let cell_clone = Arc::clone(&cell);
+            let handler = std::thread::spawn(move || match cell_clone.try_lock() {
+                Ok(mut data) => {
+                    data.add("W".to_string());
+                    data.add("o".to_string());
+                    data.add("r".to_string());
+                    data.add("l".to_string());
+                    data.add("d".to_string());
+                }
+                Err(e) => panic!("{e:?}"),
+            });
+            join_handlers.push(handler);
+        }
+        while join_handlers.len() > 0 {
+            let _ = match join_handlers.remove(0).join() {
+                Ok(_) => Ok::<(), MyError>(()),
+                Err(e) => panic!("{e:?}"),
+            };
+        }
+
+        if let Ok(mut data) = cell.try_lock() {
+            assert_eq!(&data.vec, &[
+              "H".to_string(),
+              "e".to_string(),
+              "l".to_string(),
+              "l".to_string(),
+              "o".to_string(),
+              ",".to_string(),
+              " ** ".to_string(),
               "W".to_string(),
               "o".to_string(),
               "r".to_string(),
@@ -802,6 +973,26 @@ mod tests_of_phased_cell_sync {
     }
 
     #[test]
+    fn fail_to_try_lock_if_phase_is_read() {
+        let cell = PhasedCellSync::new(MyStruct::new());
+
+        // Setup -> Read
+        if let Err(e) = cell.transition_to_read(|_data| Ok::<(), MyError>(())) {
+            panic!("{e:?}");
+        }
+
+        if let Err(e) = cell.try_lock() {
+            assert_eq!(e.phase(), Phase::Read);
+            assert_eq!(e.kind(), PhasedErrorKind::CannotCallOnPhaseRead("lock"),);
+        } else {
+            panic!();
+        }
+
+        assert_eq!(cell.phase_relaxed(), Phase::Read);
+        assert_eq!(cell.phase(), Phase::Read);
+    }
+
+    #[test]
     fn fail_to_transition_to_read_if_phase_is_read() {
         let cell = PhasedCellSync::new(MyStruct::new());
 
@@ -905,6 +1096,41 @@ mod tests_of_phased_cell_sync {
     }
 
     #[test]
+    fn fail_to_try_lock_during_transition_to_read() {
+        let cell = PhasedCellSync::new(MyStruct::new());
+
+        let cell = Arc::new(cell);
+
+        let mut join_handlers = Vec::<std::thread::JoinHandle<_>>::new();
+
+        let cell_clone = Arc::clone(&cell);
+        let handler = std::thread::spawn(move || {
+            if let Err(e) = cell_clone.transition_to_read(|_data| {
+                std::thread::sleep(time::Duration::from_secs(1));
+                Ok::<(), MyError>(())
+            }) {
+                panic!("{e:?}");
+            }
+        });
+        join_handlers.push(handler);
+
+        std::thread::sleep(time::Duration::from_millis(100));
+
+        if let Err(e) = cell.try_lock() {
+            assert_eq!(e.kind(), PhasedErrorKind::DuringTransitionToRead);
+        } else {
+            panic!();
+        }
+
+        while join_handlers.len() > 0 {
+            let _result = join_handlers.remove(0).join();
+        }
+
+        assert_eq!(cell.phase_relaxed(), Phase::Read);
+        assert_eq!(cell.phase(), Phase::Read);
+    }
+
+    #[test]
     fn fail_to_lock_during_transition_to_cleanup_from_setup() {
         let cell = PhasedCellSync::new(MyStruct::new());
 
@@ -926,6 +1152,41 @@ mod tests_of_phased_cell_sync {
         std::thread::sleep(time::Duration::from_millis(100));
 
         if let Err(e) = cell.lock() {
+            assert_eq!(e.kind(), PhasedErrorKind::DuringTransitionToCleanup);
+        } else {
+            panic!();
+        }
+
+        while join_handlers.len() > 0 {
+            let _result = join_handlers.remove(0).join();
+        }
+
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
+    }
+
+    #[test]
+    fn fail_to_try_lock_during_transition_to_cleanup_from_setup() {
+        let cell = PhasedCellSync::new(MyStruct::new());
+
+        let cell = Arc::new(cell);
+
+        let mut join_handlers = Vec::<std::thread::JoinHandle<_>>::new();
+
+        let cell_clone = Arc::clone(&cell);
+        let handler = std::thread::spawn(move || {
+            if let Err(e) = cell_clone.transition_to_cleanup(|_data| {
+                std::thread::sleep(time::Duration::from_secs(1));
+                Ok::<(), MyError>(())
+            }) {
+                panic!("{e:?}");
+            }
+        });
+        join_handlers.push(handler);
+
+        std::thread::sleep(time::Duration::from_millis(100));
+
+        if let Err(e) = cell.try_lock() {
             assert_eq!(e.kind(), PhasedErrorKind::DuringTransitionToCleanup);
         } else {
             panic!();
@@ -965,6 +1226,45 @@ mod tests_of_phased_cell_sync {
         std::thread::sleep(time::Duration::from_millis(100));
 
         if let Err(e) = cell.lock() {
+            assert_eq!(e.kind(), PhasedErrorKind::DuringTransitionToCleanup);
+        } else {
+            panic!();
+        }
+
+        while join_handlers.len() > 0 {
+            let _result = join_handlers.remove(0).join();
+        }
+
+        assert_eq!(cell.phase_relaxed(), Phase::Cleanup);
+        assert_eq!(cell.phase(), Phase::Cleanup);
+    }
+
+    #[test]
+    fn fail_to_try_lock_during_transition_to_cleanup_from_read() {
+        let cell = PhasedCellSync::new(MyStruct::new());
+
+        if let Err(e) = cell.transition_to_read(|_data| Ok::<(), MyError>(())) {
+            panic!("{e:?}");
+        }
+
+        let cell = Arc::new(cell);
+
+        let mut join_handlers = Vec::<std::thread::JoinHandle<_>>::new();
+
+        let cell_clone = Arc::clone(&cell);
+        let handler = std::thread::spawn(move || {
+            if let Err(e) = cell_clone.transition_to_cleanup(|_data| {
+                std::thread::sleep(time::Duration::from_secs(1));
+                Ok::<(), MyError>(())
+            }) {
+                panic!("{e:?}");
+            }
+        });
+        join_handlers.push(handler);
+
+        std::thread::sleep(time::Duration::from_millis(100));
+
+        if let Err(e) = cell.try_lock() {
             assert_eq!(e.kind(), PhasedErrorKind::DuringTransitionToCleanup);
         } else {
             panic!();
