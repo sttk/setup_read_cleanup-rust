@@ -122,28 +122,31 @@ setup_read_cleanup = "0.8.0"
 
 ## Supported Rust versions
 
-This crate supports Rust 1.74.1 or later.
+This crate supports Rust 1.85.1 or later.
 
 ```sh
 % ./build.sh msrv
-  [Meta]   cargo-msrv 0.18.4
+  [Meta]   cargo-msrv 0.19.3
 
-Compatibility Check #1: Rust 1.82.0
+Compatibility Check #1: Rust 1.85.1
   [OK]     Is compatible
 
-Compatibility Check #2: Rust 1.76.0
-  [OK]     Is compatible
-
-Compatibility Check #3: Rust 1.73.0
+Compatibility Check #2: Rust 1.77.2
   [FAIL]   Is incompatible
 
-Compatibility Check #4: Rust 1.74.1
-  [OK]     Is compatible
+Compatibility Check #3: Rust 1.81.0
+  [FAIL]   Is incompatible
+
+Compatibility Check #4: Rust 1.83.0
+  [FAIL]   Is incompatible
+
+Compatibility Check #5: Rust 1.84.1
+  [FAIL]   Is incompatible
 
 Result:
-   Considered (min … max):   Rust 1.70 … Rust 1.93.1
+   Considered (min … max):   Rust 1.70 … Rust 1.100.0
    Search method:            bisect
-   MSRV:                     1.74.1
+   MSRV:                     1.85.1
    Target:                   x86_64-apple-darwin
 ```
 
